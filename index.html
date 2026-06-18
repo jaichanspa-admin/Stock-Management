@@ -1,0 +1,1417 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JAI CHAN SPA — Stock Management</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<!--
+  ============================================================================
+  JAI CHAN SPA — STOCK MANAGEMENT (Single-file HTML app)
+  ----------------------------------------------------------------------------
+  • No backend / no external DB. Data persists in browser LocalStorage.
+  • Seed data extracted from the two real Excel files (products, costs,
+    service→product recipes, monthly usage, real service volumes Jan–Jun 2026).
+  • Sections: Dashboard / Daily Entry / Stock Items / Recipes / Reports /
+    Reorder Alert / Settings(Import-Export).
+  • To extend: edit the SEED constant (data) or the render*() functions (UI).
+  ============================================================================
+-->
+<style>
+/* ============================ THEME / TOKENS ============================ */
+:root{
+  --bg:#f6f2ec; --panel:#ffffff; --panel-2:#fbf9f5; --ink:#2b2520; --muted:#8c8275;
+  --line:#e7e0d5; --gold:#b08d57; --gold-d:#90703f; --wood:#8a6d4b;
+  --ok:#5b8c6e; --ok-bg:#eaf3ee; --low:#c9962f; --low-bg:#fbf2dd;
+  --warn:#c4742e; --warn-bg:#fbeede; --bad:#b5483f; --bad-bg:#f7e6e3;
+  --shadow:0 1px 3px rgba(43,37,32,.06),0 8px 24px rgba(43,37,32,.05);
+  --r:14px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:"Segoe UI",system-ui,-apple-system,"Sukhumvit Set","Noto Sans Thai",sans-serif;
+  background:var(--bg);color:var(--ink);font-size:15.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
+a{color:var(--gold-d)}
+button{font-family:inherit}
+/* ============================ LAYOUT ============================ */
+.app{display:flex;min-height:100vh}
+.sidebar{width:236px;flex:0 0 236px;background:var(--panel);border-right:1px solid var(--line);
+  padding:22px 14px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:6px}
+.brand{padding:4px 10px 16px}
+.brand h1{font-size:16px;letter-spacing:2px;margin:0;font-weight:600}
+.brand small{color:var(--muted);letter-spacing:1.5px;font-size:10px;text-transform:uppercase}
+.brand .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--gold);margin-right:7px;vertical-align:middle}
+.nav{display:flex;flex-direction:column;gap:3px}
+.nav button{display:flex;align-items:center;gap:11px;width:100%;text-align:left;border:0;background:transparent;
+  color:var(--ink);padding:11px 12px;border-radius:10px;cursor:pointer;font-size:14.5px;transition:.15s}
+.nav button .ic{width:18px;text-align:center;opacity:.75}
+.nav button:hover{background:var(--panel-2)}
+.nav button.active{background:var(--ink);color:#fff}
+.nav button.active .ic{opacity:1}
+.nav .badge-mini{margin-left:auto;background:var(--bad);color:#fff;border-radius:20px;font-size:10px;padding:1px 7px;min-width:18px;text-align:center}
+.nav button.active .badge-mini{background:var(--gold)}
+.sidebar .foot{margin-top:auto;color:var(--muted);font-size:12px;padding:11px 10px;line-height:1.65}
+.sidebar .foot b{color:var(--ink);font-size:12.5px}
+.sidebar .foot .due{color:var(--gold-d);font-weight:600}
+.main{flex:1;min-width:0;padding:26px 30px 60px;max-width:1280px}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;margin-bottom:20px;flex-wrap:wrap}
+.page-head h2{margin:0;font-size:22px;font-weight:600}
+.page-head p{margin:3px 0 0;color:var(--muted);font-size:12.5px}
+/* ============================ CARDS / GRID ============================ */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:14px;margin-bottom:22px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 17px;box-shadow:var(--shadow)}
+.card .lab{color:var(--muted);font-size:12.5px;text-transform:uppercase;letter-spacing:.6px}
+.card .val{font-size:25px;font-weight:600;margin-top:7px;letter-spacing:-.5px}
+.card .val small{font-size:13px;color:var(--muted);font-weight:400}
+.card .sub{font-size:11.5px;color:var(--muted);margin-top:4px}
+.card.accent{background:linear-gradient(135deg,#fffaf2,#fff);border-color:#eadfca}
+.card.accent .val{color:var(--gold-d)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);margin-bottom:20px;overflow:hidden}
+.panel-h{padding:15px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.panel-h h3{margin:0;font-size:14.5px;font-weight:600}
+.panel-h .hint{color:var(--muted);font-size:11.5px}
+.panel-b{padding:16px 18px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+@media(max-width:900px){.grid-2{grid-template-columns:1fr}}
+/* ============================ TABLES ============================ */
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px;white-space:nowrap}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+tbody tr:hover{background:var(--panel-2)}
+.table-wrap{overflow-x:auto}
+.muted{color:var(--muted)}
+.small{font-size:12.5px}
+.sku{font-family:ui-monospace,monospace;font-size:11px;color:var(--muted)}
+.right{text-align:right}
+/* ============================ BADGES / PILLS ============================ */
+.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap}
+.badge::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.b-ok{background:var(--ok-bg);color:var(--ok)}
+.b-low{background:var(--low-bg);color:var(--low)}
+.b-warn{background:var(--warn-bg);color:var(--warn)}
+.b-bad{background:var(--bad-bg);color:var(--bad)}
+.tag{display:inline-block;background:var(--panel-2);border:1px solid var(--line);color:var(--muted);
+  padding:2px 8px;border-radius:6px;font-size:10.5px;margin:1px 0}
+/* ============================ FORMS / BUTTONS ============================ */
+input,select{font-family:inherit;font-size:14px;color:var(--ink);background:#fff;border:1px solid var(--line);
+  border-radius:9px;padding:9px 11px;width:100%;outline:none;transition:.15s}
+input:focus,select:focus{border-color:var(--gold);box-shadow:0 0 0 3px rgba(176,141,87,.13)}
+label.fl{display:block;font-size:11.5px;color:var(--muted);margin:0 0 5px;font-weight:600}
+.field{margin-bottom:13px}
+.btn{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:#fff;color:var(--ink);
+  padding:9px 15px;border-radius:9px;cursor:pointer;font-size:14px;font-weight:500;transition:.15s}
+.btn:hover{background:var(--panel-2)}
+.btn.primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+.btn.primary:hover{background:#403930}
+.btn.gold{background:var(--gold);color:#fff;border-color:var(--gold)}
+.btn.gold:hover{background:var(--gold-d)}
+.btn.sm{padding:5px 10px;font-size:12px;border-radius:8px}
+.btn.danger{color:var(--bad);border-color:var(--bad-bg)}
+.btn.danger:hover{background:var(--bad-bg)}
+.btn.ghost{border-color:transparent;background:transparent}
+.row-actions{display:flex;gap:6px;justify-content:flex-end}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.toolbar .field{margin-bottom:0}
+.toolbar .field{min-width:130px}
+.seg{display:inline-flex;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:2px}
+.seg button{border:0;background:transparent;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:12.5px;color:var(--muted);font-weight:600}
+.seg button.active{background:#fff;color:var(--ink);box-shadow:var(--shadow)}
+/* ============================ DAILY ENTRY ============================ */
+.svc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:11px}
+.svc-card{border:1px solid var(--line);border-radius:11px;padding:12px;background:#fff;transition:.15s}
+.svc-card.has{border-color:var(--gold);background:#fffdf9}
+.svc-card .nm{font-size:13px;font-weight:600;line-height:1.25;min-height:2.4em}
+.svc-card .mc{font-size:11px;color:var(--muted);margin:3px 0 9px}
+.qty-row{display:flex;align-items:center;gap:6px}
+.qty-row button{width:30px;height:30px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer;font-size:16px;line-height:1}
+.qty-row input{text-align:center;padding:6px;font-weight:600}
+/* ============================ MODAL ============================ */
+.modal-bg{position:fixed;inset:0;background:rgba(43,37,32,.42);display:none;align-items:center;justify-content:center;z-index:50;padding:20px}
+.modal-bg.show{display:flex}
+.modal{background:#fff;border-radius:16px;max-width:560px;width:100%;max-height:88vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.modal-h{padding:17px 20px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:#fff;z-index:1}
+.modal-h h3{margin:0;font-size:16px}
+.modal-b{padding:18px 20px}
+.modal-f{padding:14px 20px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:10px;position:sticky;bottom:0;background:#fff}
+.x{border:0;background:transparent;font-size:22px;cursor:pointer;color:var(--muted);line-height:1}
+.f2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:560px){.f2{grid-template-columns:1fr}}
+/* recipe editor rows */
+.rcp-row{display:grid;grid-template-columns:1fr 90px 36px;gap:8px;margin-bottom:8px;align-items:center}
+/* toast */
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--ink);color:#fff;
+  padding:12px 20px;border-radius:10px;font-size:13px;opacity:0;transition:.25s;z-index:90;box-shadow:var(--shadow);pointer-events:none}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.bad{background:var(--bad)}
+.toast.ok{background:var(--ok)}
+/* bars */
+.bar{height:7px;background:var(--panel-2);border-radius:6px;overflow:hidden;min-width:60px}
+.bar>i{display:block;height:100%;background:var(--gold);border-radius:6px}
+.empty{padding:34px;text-align:center;color:var(--muted);font-size:13px}
+.kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--line);font-size:13px}
+.kv:last-child{border:0}
+/* manager chip */
+.mgr{font-size:11px;padding:7px 9px;border-radius:9px;background:var(--panel-2);border:1px solid var(--line);color:var(--muted);
+  display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:2px;margin-top:10px;font-weight:600}
+.mgr.on{background:var(--ok-bg);color:var(--ok);border-color:#cfe6d8}
+/* login overlay */
+.auth-bg{position:fixed;inset:0;background:linear-gradient(135deg,#efe9df,#f6f2ec);display:flex;align-items:center;justify-content:center;z-index:200;padding:20px}
+.auth-card{background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 20px 60px rgba(43,37,32,.18);width:100%;max-width:380px;padding:30px 28px}
+.auth-brand{font-size:18px;font-weight:600;letter-spacing:2px;margin-bottom:22px;text-align:center}
+.auth-brand small{display:block;font-size:10px;color:var(--muted);letter-spacing:3px;margin-top:5px}
+.auth-msg{display:none;background:var(--bad-bg);color:var(--bad);border-radius:9px;padding:9px 12px;font-size:12.5px;margin-bottom:14px}
+.auth-msg.show{display:block}
+.auth-msg.ok{background:var(--ok-bg);color:var(--ok)}
+/* choice (scent) groups in daily entry */
+.choice-grp{margin-top:9px;border-top:1px dashed var(--line);padding-top:8px}
+.cg-h{font-size:11.5px;font-weight:600;color:var(--gold-d);margin-bottom:5px;display:flex;justify-content:space-between;gap:6px}
+.cg-rem{font-weight:600}.cg-rem.ok{color:var(--ok)}.cg-rem.bad{color:var(--bad)}
+.cg-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px;font-size:12px}
+.cg-row>span{flex:1;line-height:1.2}.cg-row input{width:62px;text-align:center;padding:5px}
+.opt-row{display:grid;grid-template-columns:1fr 1fr 32px;gap:6px;margin-bottom:6px;align-items:center}
+/* mobile nav */
+.menu-btn{display:none}
+@media(max-width:860px){
+  .app{flex-direction:column}
+  .sidebar{position:relative;width:100%;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px;padding:12px;overflow-x:auto}
+  .sidebar .brand{padding:0 8px 0 4px;flex:0 0 auto}
+  .sidebar .brand small{display:none}
+  .nav{flex-direction:row;flex-wrap:nowrap;overflow-x:auto;gap:4px}
+  .nav button{padding:8px 11px;white-space:nowrap}
+  .nav button span.lbl{display:inline}
+  .sidebar .foot{display:none}
+  .main{padding:18px 14px 50px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ============================ SIDEBAR / NAV ============================ -->
+  <aside class="sidebar">
+    <div class="brand"><h1><span class="dot"></span>JAI CHAN</h1><small>Stock Management · Siam Discovery</small></div>
+    <nav class="nav" id="nav">
+      <button data-tab="dashboard" class="active"><span class="ic">◼</span><span class="lbl">Dashboard</span></button>
+      <button data-tab="daily"><span class="ic">＋</span><span class="lbl">บันทึกบริการ</span></button>
+      <button data-tab="stock"><span class="ic">▦</span><span class="lbl">คลังสินค้า</span></button>
+      <button data-tab="recipes"><span class="ic">⚗</span><span class="lbl">สูตรบริการ</span></button>
+      <button data-tab="reports"><span class="ic">▤</span><span class="lbl">รายงาน</span></button>
+      <button data-tab="count"><span class="ic">☑</span><span class="lbl">นับสต็อก</span><span class="badge-mini" id="navCount" style="display:none">!</span></button>
+      <button data-tab="reorder"><span class="ic">⚑</span><span class="lbl">แจ้งเตือนสั่งซื้อ</span><span class="badge-mini" id="navReorder" style="display:none">0</span></button>
+      <button data-tab="settings"><span class="ic">⚙</span><span class="lbl">ตั้งค่า</span></button>
+    </nav>
+    <div class="foot"><b>วิธีใช้งาน</b><br>
+      1. พนักงาน — บันทึกบริการทุกวันที่แท็บ “บันทึกบริการ”<br>
+      2. <span class="due">นับสต็อกจริง 2 รอบ/เดือน — ไม่เกินวันที่ 10 และไม่เกินวันที่ 20</span><br>
+      3. ผู้จัดการ — กด “ปิดรอบ” เพื่ออัปเดตสต็อกและดูรายการที่ต้องสั่งซื้อ<br>
+      <span style="opacity:.8">ข้อมูลปลอดภัยบนคลาวด์ (Supabase) · เข้าระบบด้วยบัญชีพนักงาน</span></div>
+    <div id="mgrChip" class="mgr"></div>
+  </aside>
+
+  <!-- ============================ MAIN ============================ -->
+  <main class="main" id="main"></main>
+</div>
+
+<!-- ============================ LOGIN OVERLAY ============================ -->
+<div class="auth-bg" id="authBg">
+  <div class="auth-card">
+    <div class="auth-brand"><span class="dot"></span>JAI CHAN <small>STOCK MANAGEMENT</small></div>
+    <div id="authMsg" class="auth-msg"></div>
+    <form id="authForm" onsubmit="return false">
+      <div class="field"><label class="fl">อีเมล</label><input id="authEmail" type="email" autocomplete="username" placeholder="staff@jaichanspa.com"></div>
+      <div class="field"><label class="fl">รหัสผ่าน</label><input id="authPass" type="password" autocomplete="current-password" placeholder="••••••••"></div>
+      <button class="btn primary" style="width:100%;justify-content:center;padding:12px" onclick="doLogin()">เข้าสู่ระบบ</button>
+    </form>
+    <p class="muted small" id="authHint" style="margin-top:14px;text-align:center">เชื่อมต่อคลาวด์…</p>
+  </div>
+</div>
+
+<div class="modal-bg" id="modalBg"><div class="modal" id="modal"></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============================================================================
+   SEED DATA  — derived from "Order Product Spa 2026.xlsx" + sales report.
+   products: catalog + cost + real monthly usage avg.
+   services: recipe matrix (qty of each sku per 1 service).
+   serviceDailyRate: real avg services/day (period Jan1–Jun15 2026).
+   ========================================================================== */
+const SEED = {"products":[{"sku":"SC01","name":"สครับกาแฟผิวตัว (Coconut & Coffee Glow Scrub)","category":"Skin Care","sachetSize":60.0,"cost":19.5,"monthlyUsage":7.75,"unit":"ซอง"},{"sku":"SC02","name":"สครับชาเขียวผิวตัว (Green Tea Glow Scrub)","category":"Skin Care","sachetSize":60.0,"cost":19.5,"monthlyUsage":0.0,"unit":"ซอง"},{"sku":"SC03","name":"สครับส้มผิวตัว (Tangerine Glow Scrub)","category":"Skin Care","sachetSize":60.0,"cost":19.5,"monthlyUsage":0.0,"unit":"ซอง"},{"sku":"SC04","name":"เจลอาบน้ำ (Jasmine & Oat Nourishing Shower Gel)","category":"Skin Care","sachetSize":20.0,"cost":4.72,"monthlyUsage":11.25,"unit":"ซอง"},{"sku":"SC05","name":"น้ำมันนวดมะพร้าวมะลิ (Jasmine & Coconut Relaxing Oil)","category":"Skin Care","sachetSize":40.0,"cost":11.2,"monthlyUsage":243.25,"unit":"ซอง"},{"sku":"SC06","name":"น้ำมันซีตรัสนวดตัว (Citrus Aroma Oil)","category":"Skin Care","sachetSize":40.0,"cost":11.2,"monthlyUsage":0.0,"unit":"ซอง"},{"sku":"SC07","name":"น้ำมันมะกรูดนวดตัว (Kaffir lime Aroma Oil)","category":"Skin Care","sachetSize":40.0,"cost":11.2,"monthlyUsage":0.0,"unit":"ซอง"},{"sku":"SC08","name":"ครีมนวดตัวน้ำนมข้าว (Rice Milk Body Conditioner)","category":"Skin Care","sachetSize":20.0,"cost":6.5,"monthlyUsage":8.0,"unit":"ซอง"},{"sku":"HC01","name":"ยาสระผม (Siam Floral Shampoo)","category":"Hair Care","sachetSize":20.0,"cost":6.5,"monthlyUsage":552.5,"unit":"ซอง"},{"sku":"HC02","name":"ครีมนวด (Siam Floral Conditioner)","category":"Hair Care","sachetSize":20.0,"cost":5.6,"monthlyUsage":231.0,"unit":"ซอง"},{"sku":"HC03","name":"ยาสระผม (Coconut Milk & Honey Shampoo)","category":"Hair Care","sachetSize":20.0,"cost":6.5,"monthlyUsage":477.5,"unit":"ซอง"},{"sku":"HC04","name":"ครีมนวดผม (Coconut Milk & Honey Conditioner)","category":"Hair Care","sachetSize":20.0,"cost":5.6,"monthlyUsage":182.25,"unit":"ซอง"},{"sku":"L01","name":"น้ำมันมะพร้าว สำหรับ หน้า เส้นผม ตัว (Coconut Oil for Face, Hair and Body)","category":"Liquid DIY","sachetSize":30.0,"cost":16.8,"monthlyUsage":270.75,"unit":"ซอง"},{"sku":"FC01","name":"น้ำใบย่านาง (Tiliacora Triandra Leaf Juice)","category":"Facial Care","sachetSize":10.0,"cost":2.2,"monthlyUsage":84.25,"unit":"ซอง"},{"sku":"FC02","name":"โฟมล้างหน้า (Honey & Milk Jasmine Gentle Cleansing Foam)","category":"Facial Care","sachetSize":2.5,"cost":2.375,"monthlyUsage":84.25,"unit":"ซอง"},{"sku":"FC03","name":"สครับผิวหน้า (Honey & Oat Jasmine Soothing Facial Scrub)","category":"Facial Care","sachetSize":5.0,"cost":3.25,"monthlyUsage":84.25,"unit":"ซอง"},{"sku":"FC04","name":"มาส์กผิวหน้า น้ําผึ้งและมะลิ (Honey&Jasmine Calming Face Mask)","category":"Facial Care","sachetSize":20.0,"cost":15.0,"monthlyUsage":84.25,"unit":"ซอง"},{"sku":"FC05","name":"เจลทาผิวหน้า (Aloe Comfort Face Gel)","category":"Facial Care","sachetSize":5.0,"cost":12.0,"monthlyUsage":84.25,"unit":"ซอง"},{"sku":"FC06","name":"ครีมกันแดด (Sun Skin Protection)","category":"Facial Care","sachetSize":2.5,"cost":6.0,"monthlyUsage":84.25,"unit":"ซอง"},{"sku":"P01","name":"ผงขมิ้น (Turmeric Powder)","category":"Powder DIY","sachetSize":5.0,"cost":3.5,"monthlyUsage":0.0,"unit":"ซอง"},{"sku":"P02","name":"ผงข้าวโอ๊ต (Oatmeal Powder)","category":"Powder DIY","sachetSize":5.0,"cost":3.5,"monthlyUsage":40.0,"unit":"ซอง"},{"sku":"P03","name":"ผงใบหมี่ (Bai Mee Powder)","category":"Powder DIY","sachetSize":5.0,"cost":3.5,"monthlyUsage":0.0,"unit":"ซอง"},{"sku":"P04","name":"ผงดอกมะลิ (Jasmine Powder)","category":"Powder DIY","sachetSize":5.0,"cost":3.5,"monthlyUsage":40.0,"unit":"ซอง"},{"sku":"P05","name":"ผงน้ำตะไคร้ (Lemongrass Powder)","category":"Powder DIY","sachetSize":5.0,"cost":3.5,"monthlyUsage":3.5,"unit":"ซอง"},{"sku":"P06","name":"ผงมะกรูด (Kaffir Lime Powder)","category":"Powder DIY","sachetSize":5.0,"cost":3.5,"monthlyUsage":3.5,"unit":"ซอง"},{"sku":"P07","name":"ผงไพล (Plai Powder)","category":"Powder DIY","sachetSize":5.0,"cost":3.5,"monthlyUsage":3.5,"unit":"ซอง"},{"sku":"P08","name":"ผงดินสอพอง (Thai Clay Powder)","category":"Powder DIY","sachetSize":5.0,"cost":3.5,"monthlyUsage":0.0,"unit":"ซอง"},{"sku":"HB01","name":"บาล์มยาหม่องมะลิ (Jai Chan Signature Jasmine Energizer)","category":"Herbal Balms & Aroma","sachetSize":2.5,"cost":4.375,"monthlyUsage":176.25,"unit":"ชิ้น"},{"sku":"HB02","name":"ลูกประคบ (Jai Chan Herbal Compress Balls)","category":"Herbal Balms & Aroma","sachetSize":null,"cost":0.0,"monthlyUsage":0.0,"unit":"ชิ้น"},{"sku":"HB03","name":"เทียนหอม 100 ชิ้น (Aromatherapy Candles)","category":"Herbal Balms & Aroma","sachetSize":null,"cost":0.0,"monthlyUsage":1.0,"unit":"ชิ้น"},{"sku":"HB04","name":"เมล็ดเกลือใหญ่สปา (Spa Big Salt)","category":"Herbal Balms & Aroma","sachetSize":20.0,"cost":2.5,"monthlyUsage":0.0,"unit":"ชิ้น"},{"sku":"HB05","name":"เมล็ดเกลือสปาป่น (Spa Small Salt)","category":"Herbal Balms & Aroma","sachetSize":40.0,"cost":2.5,"monthlyUsage":91.38,"unit":"ชิ้น"},{"sku":"HB07","name":"บาล์มยาหม่องดอกโมก (Mok Floral Therapy Balm)","category":"Herbal Balms & Aroma","sachetSize":2.5,"cost":4.375,"monthlyUsage":21.75,"unit":"ชิ้น"},{"sku":"FD01","name":"นมสด 125 ml 48 boxes (Milk)","category":"Fresh DIY","sachetSize":null,"cost":400.0,"monthlyUsage":3.0,"unit":"หน่วย"},{"sku":"FD02","name":"น้ำผึ้ง 770 g (Honey)","category":"Fresh DIY","sachetSize":null,"cost":200.0,"monthlyUsage":2.0,"unit":"หน่วย"},{"sku":"M01","name":"ฟองน้ำเช็ดหน้า (Sponge)","category":"Miscellaneous","sachetSize":null,"cost":100.0,"monthlyUsage":87.75,"unit":"ชิ้น"},{"sku":"M02","name":"สำลีรีดขอบ (Cotton)","category":"Miscellaneous","sachetSize":null,"cost":30.0,"monthlyUsage":87.75,"unit":"ชิ้น"},{"sku":"M03","name":"Strapless (เกาะอกผ้า)","category":"Miscellaneous","sachetSize":null,"cost":350.0,"monthlyUsage":7.75,"unit":"ชิ้น"},{"sku":"M04","name":"Underwear(กางเกงในผ้า)","category":"Miscellaneous","sachetSize":null,"cost":350.0,"monthlyUsage":7.75,"unit":"ชิ้น"},{"sku":"M05","name":"Candles (เทียนจุดน้ำมันตะเกียง)","category":"Miscellaneous","sachetSize":null,"cost":200.0,"monthlyUsage":0.0,"unit":"ชิ้น"},{"sku":"M06","name":"Tea sachet (ชาซอง)","category":"Miscellaneous","sachetSize":null,"cost":100.0,"monthlyUsage":0.0,"unit":"ชิ้น"},{"sku":"M07","name":"Lids (ฝา 1,000 ชิ้น)","category":"Miscellaneous","sachetSize":null,"cost":1250.0,"monthlyUsage":0.0,"unit":"ชิ้น"},{"sku":"M08","name":"Paper Cup (แก้วกระดาษ 1,000 ใบ)","category":"Miscellaneous","sachetSize":null,"cost":13107.5,"monthlyUsage":0.0,"unit":"ชิ้น"},{"sku":"M09","name":"คอตตอนบัต","category":"Miscellaneous","sachetSize":null,"cost":30.0,"monthlyUsage":0.0,"unit":"ชิ้น"}],"services":{"Hair Spa 45":{"HC01":3.0,"HC02":1.0},"ASMR S":{"HC01":3.0,"HC02":1.0,"L01":1.0,"M05":1.0},"ASMR M":{"HC01":3.0,"HC02":1.0,"L01":1.0,"M05":1.0},"ASMR L":{"HC01":3.0,"HC02":1.0,"L01":1.0,"FC01":1.0,"FC02":1.0,"FC03":1.0,"FC04":1.0,"FC05":1.0,"FC06":1.0,"P02":1.0,"FD01":1.0,"FD02":1.0,"M01":1.0,"M02":1.0,"M05":1.0},"Head Office Reset":{"HC01":3.0,"HC02":1.0,"L01":2.0,"M05":1.0},"Royal Thai Facial Massage":{"FC01":1.0,"FC02":1.0,"FC03":1.0,"FC04":1.0,"FC05":1.0,"FC06":1.0,"P02":1.0,"FD01":1.0,"FD02":1.0,"M01":1.0,"M02":1.0},"Instant Glow Cryo Lymph":{"FC01":1.0,"FC02":1.0,"FC03":1.0,"FC04":1.0,"FC05":1.0,"FC06":1.0,"P02":1.0,"FD01":1.0,"FD02":1.0,"M01":1.0,"M02":1.0},"Golden Glow Body Polish":{"SC01":1.0,"SC04":1.0,"SC08":1.0,"FD01":1.0,"FD02":1.0,"M03":1.0,"M04":1.0},"Thai Herbal Body Wrap":{"SC04":1.0,"SC08":1.0,"P05":1.0,"P06":1.0,"P07":1.0,"FD01":1.0,"FD02":1.0,"M01":1.0,"M02":1.0},"Thai Bliss (Thai+Foot)":{"SC05":1.0,"HB01":1.0,"HB05":1.0},"Thai Bliss (Thai+NS)":{"SC05":1.0,"HB01":1.0},"Thai Pampering":{"SC05":1.0,"FC01":1.0,"FC02":1.0,"FC03":1.0,"FC04":1.0,"FC05":1.0,"FC06":1.0,"P02":1.0,"FD01":1.0,"FD02":1.0,"M01":1.0,"M02":1.0},"Serenity Glow":{"SC01":1.0,"SC04":2.0,"SC08":1.0,"P05":1.0,"P06":1.0,"P07":1.0,"FD01":2.0,"FD02":2.0,"M01":1.0,"M02":1.0,"M03":1.0,"M04":1.0},"Thai 60 Mins":{},"Thai 120 Mins":{},"Soul Soothing Foot 60 Mins":{"SC05":1.0,"HB01":1.0,"HB05":1.0},"Soul Soothing Foot 120 Mins":{"SC05":1.0,"HB01":1.0,"HB05":1.0},"Royal Shoulder Neck 60 Mins":{"SC05":1.0,"HB01":1.0},"Royal Shoulder Neck 120 Mins":{"SC05":1.0,"HB01":1.0},"Aroma Relaxing 60 Mins":{"SC05":1.0},"Aroma Relaxing 120 Mins":{"SC05":1.0},"Thai Floral Balm 60 Mins":{"SC05":1.0,"HB01":1.0},"Thai Floral Balm 120 Mins":{"SC05":1.0,"HB01":1.0},"Full Body Office Sydrome":{"SC05":1.0,"HB01":1.0},"Jets Lagged":{"SC05":1.0,"HB01":1.0}},"serviceDailyRate":{"ASMR L":2.37,"ASMR M":3.52,"ASMR S":3.55,"Hair Spa 45":3.06,"Royal Thai Facial Massage":0.39,"Golden Glow Body Polish":0.14,"Thai Herbal Body Wrap":0.02,"Soul Soothing Foot 60 Mins":3.06,"Royal Shoulder Neck 60 Mins":2.04,"Thai 60 Mins":1.67,"Aroma Relaxing 60 Mins":1.42,"Thai Floral Balm 60 Mins":1.44,"Thai Pampering":0.09,"Serenity Glow":0.09,"Thai Bliss (Thai+Foot)":0.45}};
+
+/* ============================================================================
+   UTILITIES
+   ========================================================================== */
+const $=(s,r=document)=>r.querySelector(s);
+const $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const LS_KEY='jaichan_stock_v1';
+const uid=()=>Math.random().toString(36).slice(2,9);
+const money=n=>'฿'+(Math.round(n||0)).toLocaleString('en-US');
+const money2=n=>'฿'+(n||0).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:1});
+const qf=n=>{n=n||0;return Number.isInteger(n)?n.toLocaleString('en-US'):n.toLocaleString('en-US',{maximumFractionDigits:1});};
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function pad(n){return n<10?'0'+n:''+n;}
+function toISO(d){return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());}
+function fromISO(s){const[y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d);}
+function addDays(s,n){const d=fromISO(s);d.setDate(d.getDate()+n);return toISO(d);}
+function todayISO(){return toISO(new Date());}
+function weekStartISO(s){const d=fromISO(s);const off=(d.getDay()+6)%7;d.setDate(d.getDate()-off);return toISO(d);} // Monday
+function monthKey(s){return s.slice(0,7);}
+function thDate(s){const d=fromISO(s);return d.toLocaleDateString('th-TH',{day:'numeric',month:'short',year:'2-digit'});}
+function hashCode(s){let h=0;for(let i=0;i<s.length;i++){h=(h<<5)-h+s.charCodeAt(i);h|=0;}return Math.abs(h);}
+
+/* ============================================================================
+   STATE  (db persisted in LocalStorage)
+   db = { products:[{sku,name,category,unit,cost,sachetSize,stock,minStock,reorderQty,monthlyUsage}],
+          services:[{id,name,recipe:[{sku,qty}]}],
+          logs:[{id,date,service,count}], meta:{seededAt} }
+   ========================================================================== */
+let db=null;
+
+function buildDemo(){
+  // --- products with seeded stock levels (deterministic variety for demo) ---
+  const products=SEED.products.map(p=>{
+    const mu=p.monthlyUsage||0;
+    const minStock=Math.max(3,Math.ceil(mu*0.4));
+    let stock;
+    if(mu>0){
+      const f=0.1+((hashCode(p.sku)%100)/100)*1.5; // 0.1..1.6 of monthly usage
+      stock=Math.round(mu*f);
+    }else{
+      stock=hashCode(p.sku)%25; // baseline for unused items
+    }
+    const reorderQty=Math.max(minStock,Math.ceil(mu)||5);
+    return {sku:p.sku,name:p.name,category:p.category,unit:p.unit,cost:p.cost,
+      sachetSize:p.sachetSize,stock,minStock,reorderQty,monthlyUsage:mu};
+  });
+  // --- services from recipe matrix ---
+  const services=Object.entries(SEED.services).map((e,i)=>({
+    id:'S'+pad(i+1),name:e[0],
+    recipe:Object.entries(e[1]).map(([sku,qty])=>({sku,qty}))
+  }));
+  // --- historical logs: last 60 days, generated from real daily-rate table ---
+  const logs=[]; const rates=SEED.serviceDailyRate;
+  for(let i=60;i>=1;i--){
+    const date=addDays(todayISO(),-i);
+    const dow=fromISO(date).getDay();
+    const wk=(dow===0||dow===6)?1.25:1; // weekend lift
+    for(const[name,rate]of Object.entries(rates)){
+      const lambda=rate*wk;
+      let c=Math.floor(lambda+(Math.random()*lambda*0.9));
+      if(Math.random()<lambda-Math.floor(lambda))c++;
+      if(c>0)logs.push({id:uid(),date,service:name,count:c});
+    }
+  }
+  return {products,services,logs,meta:{seededAt:new Date().toISOString()}};
+}
+/* ============================================================================
+   SUPABASE BACKEND  — real auth + server-enforced permissions (RLS/RPC)
+   db (in-memory) is a read cache; all writes go through sb / RPC then update db.
+   ========================================================================== */
+let sb=null, currentUser=null, currentRole='staff';
+function initSupabase(){
+  const cfg=window.JAICHAN_CONFIG||{};
+  if(!cfg.SUPABASE_URL||!cfg.SUPABASE_ANON_KEY||/YOUR-/.test(cfg.SUPABASE_URL+cfg.SUPABASE_ANON_KEY)){
+    return false;
+  }
+  sb=window.supabase.createClient(cfg.SUPABASE_URL,cfg.SUPABASE_ANON_KEY);
+  return true;
+}
+/* db is the source of truth in memory; save() is a no-op (cloud is authoritative).
+   Each mutation calls an api.* method which persists to Supabase, then updates db. */
+function save(){}
+
+/* ---- column mapping (snake_case DB <-> camelCase app) ---- */
+const mapProduct=r=>({sku:r.sku,name:r.name,category:r.category,unit:r.unit,cost:+r.cost,
+  sachetSize:r.sachet_size==null?null:+r.sachet_size,stock:+r.stock,minStock:+r.min_stock,
+  reorderQty:+r.reorder_qty,monthlyUsage:+r.monthly_usage,supplierName:r.supplier_name||'',
+  orderChannel:r.order_channel||'',orderUrl:r.order_url||'',contact:r.contact||'',
+  leadTimeDays:r.lead_time_days==null?'':r.lead_time_days,packSize:r.pack_size||'',supplierNotes:r.supplier_notes||''});
+const mapLog=r=>({id:r.id,date:r.date,service:r.service,serviceId:r.service_id,count:r.count,usage:r.usage||[],choices:r.choices||{}});
+const mapAdj=r=>({id:r.id,ts:r.ts,sku:r.sku,productName:r.product_name,from:+r.from_qty,to:+r.to_qty,delta:+r.delta,reason:r.reason,actor:r.actor});
+const mapCount=r=>({id:r.id,periodKey:r.period_key,round:r.round,label:r.label,deadline:r.deadline,status:r.status,
+  startedTs:r.started_ts,closedTs:r.closed_ts,countedBy:r.counted_by||'',lines:r.lines||{},result:r.result||null});
+
+/* ---- load everything from Supabase into db ---- */
+async function loadAll(){
+  const [P,S,L,A,C]=await Promise.all([
+    sb.from('products').select('*').order('sku'),
+    sb.from('services').select('*'),
+    sb.from('logs').select('*'),
+    sb.from('adjustments').select('*').order('ts',{ascending:false}).limit(500),
+    sb.from('counts').select('*')
+  ]);
+  for(const r of [P,S,L,A,C])if(r.error)throw r.error;
+  db={
+    products:(P.data||[]).map(mapProduct),
+    services:(S.data||[]).map(r=>({id:r.id,name:r.name,recipe:r.recipe||[]})),
+    logs:(L.data||[]).map(mapLog),
+    adjustments:(A.data||[]).map(mapAdj),
+    counts:(C.data||[]).map(mapCount),
+    meta:{},settings:{}
+  };
+}
+/* ---- write API (each persists to Supabase, throws on error) ---- */
+async function rpc(fn,args){const{error}=await sb.rpc(fn,args);if(error)throw error;}
+const api={
+  logService:e=>rpc('log_service',{p_id:e.id,p_date:e.date,p_service:e.service,p_service_id:e.serviceId,p_count:e.count,p_usage:e.usage,p_choices:e.choices}),
+  voidLog:id=>rpc('void_log',{p_id:id}),
+  adjustStock:(sku,to,reason)=>rpc('adjust_stock',{p_sku:sku,p_to:to,p_reason:reason}),
+  saveProduct:(obj,reason)=>rpc('save_product',{p:obj,p_reason:reason||null}),
+  deleteProduct:sku=>rpc('delete_product',{p_sku:sku}),
+  saveService:svc=>rpc('save_service',{p:svc}),
+  deleteService:id=>rpc('delete_service',{p_id:id}),
+  closeCount:(id,result)=>rpc('close_count',{p_id:id,p_result:result}),
+  importAll:payload=>rpc('import_all',{p:payload}),
+  countInsert:async row=>{const{error}=await sb.from('counts').insert(row);if(error)throw error;},
+  countUpdate:async(id,patch)=>{const{error}=await sb.from('counts').update(patch).eq('id',id);if(error)throw error;},
+  countDelete:async id=>{const{error}=await sb.from('counts').delete().eq('id',id);if(error)throw error;}
+};
+async function guard(promise,okMsg){try{await promise;if(okMsg)toast(okMsg,'ok');return true;}
+  catch(e){toast(errMsg(e),'bad');return false;}}
+function errMsg(e){const m=(e&&e.message)||String(e);
+  if(/manager role required/i.test(m))return 'ต้องสิทธิ์ผู้จัดการ';
+  if(/not authenticated/i.test(m))return 'เซสชันหมดอายุ — เข้าระบบใหม่';
+  return 'ผิดพลาด: '+m;}
+
+/* ---- MIGRATION: fill new fields on old data safely (non-destructive) ---- */
+const OIL_OPTS=[{sku:'SC05',label:'มะลิ/มะพร้าว (Jasmine & Coconut)'},{sku:'SC06',label:'Citrus'},{sku:'SC07',label:'Kaffir lime'}];
+const CHOICE_SVCS=['Thai Bliss (Thai+Foot)','Thai Bliss (Thai+NS)','Thai Pampering',
+  'Soul Soothing Foot 60 Mins','Soul Soothing Foot 120 Mins','Royal Shoulder Neck 60 Mins','Royal Shoulder Neck 120 Mins',
+  'Aroma Relaxing 60 Mins','Aroma Relaxing 120 Mins','Thai Floral Balm 60 Mins','Thai Floral Balm 120 Mins',
+  'Full Body Office Sydrome','Jets Lagged'];
+/* operational / cleaning consumables — NOT deducted by services, only changed via stock count or manual adjust */
+const OP_ITEMS=[
+  {sku:'CL01',name:'น้ำยาถูพื้น (Floor Cleaner)',category:'Cleaning',unit:'แกลลอน',cost:180,monthlyUsage:4},
+  {sku:'CL02',name:'น้ำยาซักผ้า (Laundry Detergent)',category:'Cleaning',unit:'ถุง',cost:250,monthlyUsage:6},
+  {sku:'CL03',name:'น้ำยาปรับผ้านุ่ม (Fabric Softener)',category:'Cleaning',unit:'แกลลอน',cost:160,monthlyUsage:3},
+  {sku:'CL04',name:'น้ำยาล้างจาน (Dishwashing Liquid)',category:'Cleaning',unit:'แกลลอน',cost:120,monthlyUsage:2},
+  {sku:'CL05',name:'น้ำยาเช็ดกระจก (Glass Cleaner)',category:'Cleaning',unit:'ขวด',cost:65,monthlyUsage:2},
+  {sku:'CL06',name:'แอลกอฮอล์ฆ่าเชื้อ (Disinfectant Alcohol)',category:'Cleaning',unit:'แกลลอน',cost:300,monthlyUsage:3},
+  {sku:'CS01',name:'กระดาษทิชชู่ (Tissue Roll)',category:'Consumable',unit:'แพ็ค',cost:90,monthlyUsage:8},
+  {sku:'CS02',name:'ถุงขยะ (Garbage Bags)',category:'Consumable',unit:'แพ็ค',cost:55,monthlyUsage:10},
+  {sku:'CS03',name:'สบู่ล้างมือรีฟิล (Hand Soap Refill)',category:'Consumable',unit:'แกลลอน',cost:140,monthlyUsage:2},
+  {sku:'CS04',name:'น้ำดื่มบริการลูกค้า (Drinking Water pack)',category:'Consumable',unit:'แพ็ค',cost:50,monthlyUsage:20}
+];
+function migrate(){
+  db.meta=db.meta||{seededAt:new Date().toISOString()};
+  db.settings=db.settings||{};
+  if(!db.settings.pin)db.settings.pin='2468';                 // default PIN (client-side guard)
+  db.adjustments=db.adjustments||[];                          // stock audit log
+  db.counts=db.counts||[];                                    // physical stock-count rounds
+  // seed operational consumables once (also into existing saved data)
+  if(!db.meta.opItemsSeeded){
+    OP_ITEMS.forEach(op=>{if(!pBySku(op.sku)){const mu=op.monthlyUsage||0;
+      db.products.push({sku:op.sku,name:op.name,category:op.category,unit:op.unit,cost:op.cost,sachetSize:null,
+        stock:Math.max(0,Math.round(mu*(0.3+(hashCode(op.sku)%70)/100))),
+        minStock:Math.max(2,Math.ceil(mu*0.5)),reorderQty:Math.max(4,Math.ceil(mu)),monthlyUsage:mu});}});
+    db.meta.opItemsSeeded=true;
+  }
+  // product supplier fields
+  const supDef={supplierName:'',orderChannel:'',orderUrl:'',contact:'',leadTimeDays:'',packSize:'',supplierNotes:''};
+  db.products.forEach(p=>{for(const k in supDef)if(p[k]===undefined)p[k]=supDef[k];});
+  // recipe items -> typed; convert SC05 fixed -> customer-choice oil group for selected services
+  db.services.forEach(s=>{
+    s.recipe=(s.recipe||[]).map(r=>r.type?r:{type:'fixed',sku:r.sku,qty:r.qty});
+    if(CHOICE_SVCS.includes(s.name)&&!s.recipe.some(r=>r.type==='choice'&&r.groupId==='massage_oil_scent')){
+      s.recipe=s.recipe.map(r=>(r.type==='fixed'&&r.sku==='SC05')
+        ?{type:'choice',groupId:'massage_oil_scent',label:'กลิ่นน้ำมันนวด',qty:r.qty,options:OIL_OPTS.slice()}:r);
+    }
+  });
+}
+
+/* ============================================================================
+   AUTH + ROLES  (real, server-enforced — replaces the old client-side PIN)
+   ========================================================================== */
+function isManager(){return currentRole==='manager';}
+/* requireManager: managers proceed; staff are blocked (server also enforces). */
+function requireManager(cb){
+  if(isManager()){cb();return;}
+  toast('ต้องสิทธิ์ผู้จัดการ — ติดต่อผู้จัดการเพื่อทำรายการนี้','bad');
+}
+function refreshManagerUI(){
+  const el=$('#mgrChip');if(!el)return;
+  if(!currentUser){el.innerHTML='';el.className='mgr';return;}
+  const mgr=isManager();
+  el.innerHTML=`${mgr?'🔓 ผู้จัดการ':'👤 พนักงาน'} · <span class="muted">${esc(currentUser.email||'')}</span>`
+    +`<button class="btn sm ghost" style="padding:1px 6px;margin-left:6px" onclick="doLogout()">ออกจากระบบ</button>`;
+  el.className=mgr?'mgr on':'mgr';
+}
+function authMsg(t,ok){const m=$('#authMsg');if(!m)return;m.textContent=t;m.className='auth-msg show'+(ok?' ok':'');if(!t)m.className='auth-msg';}
+async function doLogin(){
+  const email=($('#authEmail').value||'').trim(),pass=$('#authPass').value||'';
+  if(!email||!pass){authMsg('กรอกอีเมลและรหัสผ่าน');return;}
+  authMsg('');
+  const{error}=await sb.auth.signInWithPassword({email,password:pass});
+  if(error){authMsg(/invalid/i.test(error.message)?'อีเมลหรือรหัสผ่านไม่ถูกต้อง':error.message);return;}
+  // session handled by onAuthStateChange -> enterApp()
+}
+async function doLogout(){await sb.auth.signOut();currentUser=null;location.reload();}
+async function fetchRole(){
+  try{const{data}=await sb.from('profiles').select('role').eq('id',currentUser.id).single();
+    currentRole=(data&&data.role)||'staff';}catch(e){currentRole='staff';}
+}
+let _entered=false;
+async function enterApp(){
+  if(_entered)return; _entered=true;          // guard against duplicate auth events
+  $('#authHint').textContent='กำลังโหลดข้อมูล…';
+  await fetchRole();
+  try{await loadAll();}catch(e){authMsg('โหลดข้อมูลไม่สำเร็จ: '+errMsg(e));return;}
+  $('#authBg').style.display='none';
+  refreshBadges();refreshManagerUI();go('dashboard');
+}
+
+/* ---- lookups ---- */
+const pBySku=sku=>db.products.find(p=>p.sku===sku);
+const svcByName=n=>db.services.find(s=>s.name===n);
+const svcById=id=>db.services.find(s=>s.id===id);
+/* ---- recipe helpers (support fixed items + customer-choice groups) ---- */
+const recipeFixed=svc=>(svc.recipe||[]).filter(r=>r.type!=='choice');
+const recipeChoices=svc=>(svc.recipe||[]).filter(r=>r.type==='choice');
+function itemCost(r){ // estimated cost of one recipe item per 1 service
+  if(r.type==='choice'){const cs=(r.options||[]).map(o=>{const p=pBySku(o.sku);return p?p.cost:0;});
+    return (cs.length?cs.reduce((a,b)=>a+b,0)/cs.length:0)*r.qty;}              // avg of options
+  const p=pBySku(r.sku);return p?p.cost*r.qty:0;
+}
+function recipeCost(svc){return (svc.recipe||[]).reduce((t,r)=>t+itemCost(r),0);}
+function recipeItemCount(svc){return (svc.recipe||[]).filter(r=>r.type==='choice'?(r.options||[]).length:pBySku(r.sku)).length;}
+
+/* ---- usage snapshot per log (prefer stored snapshot; fallback to current recipe) ---- */
+function logUsage(lg){
+  if(lg.usage&&lg.usage.length)return lg.usage;                                 // historical accuracy
+  const s=lg.serviceId?svcById(lg.serviceId):svcByName(lg.service);
+  if(!s)return [];
+  const out=[];
+  for(const r of s.recipe){
+    if(r.type==='choice'){const o=(r.options||[])[0];if(!o)continue;const p=pBySku(o.sku);if(!p)continue;
+      out.push({sku:o.sku,qty:r.qty*lg.count,cost:+(r.qty*lg.count*p.cost).toFixed(4)});}   // default to first scent
+    else{const p=pBySku(r.sku);if(!p)continue;
+      out.push({sku:r.sku,qty:r.qty*lg.count,cost:+(r.qty*lg.count*p.cost).toFixed(4)});}
+  }
+  return out;
+}
+
+/* ---- usage aggregation from logs over [from,to] inclusive ---- */
+function aggregate(from,to){
+  const ubp={},cbp={},svc={};let total=0,svcTotal=0;
+  for(const lg of db.logs){
+    if(lg.date<from||lg.date>to)continue;
+    svc[lg.service]=(svc[lg.service]||0)+lg.count;svcTotal+=lg.count;
+    for(const u of logUsage(lg)){ubp[u.sku]=(ubp[u.sku]||0)+u.qty;cbp[u.sku]=(cbp[u.sku]||0)+u.cost;total+=u.cost;}
+  }
+  return {ubp,cbp,total,svc,svcTotal};
+}
+const stockValue=()=>db.products.reduce((t,p)=>t+p.stock*p.cost,0);
+
+/* ---- reorder analytics for one product ---- */
+function avgDailyUse(sku,days){
+  const to=todayISO(),from=addDays(to,-(days-1));
+  const a=aggregate(from,to);return (a.ubp[sku]||0)/days;
+}
+function reorderInfo(p){
+  const d7=avgDailyUse(p.sku,7),d30=avgDailyUse(p.sku,30);
+  const base=(p.monthlyUsage||0)/30;
+  const daily=Math.max(d30,base);               // conservative usage rate
+  const cover=daily>0?p.stock/daily:Infinity;   // days of stock left
+  let status;
+  if(p.stock<=0)status='out';
+  else if(p.stock<=p.minStock||cover<=7)status='reorder';
+  else if(cover<=14||p.stock<=p.minStock*1.5)status='low';
+  else status='ok';
+  // suggest order to reach ~30-day cover + min buffer
+  const target=daily*30+p.minStock;
+  const suggest=Math.max(0,Math.ceil(target-p.stock));
+  const anomaly=d30>0&&d7>d30*1.8; // burning faster than usual
+  return {d7,d30,daily,cover,status,suggest,anomaly};
+}
+function reorderList(){return db.products.map(p=>({p,...reorderInfo(p)}));}
+function alertCount(){return reorderList().filter(r=>r.status==='reorder'||r.status==='out').length;}
+
+const STATUS_BADGE={ok:['b-ok','ปกติ'],low:['b-low','ใกล้หมด'],reorder:['b-warn','ควรสั่งซื้อ'],out:['b-bad','หมด']};
+function statusBadge(s){const[c,t]=STATUS_BADGE[s];return `<span class="badge ${c}">${t}</span>`;}
+
+/* ============================================================================
+   UI HELPERS  (toast / modal)
+   ========================================================================== */
+let toastT;
+function toast(msg,kind=''){const t=$('#toast');t.textContent=msg;t.className='toast show '+kind;
+  clearTimeout(toastT);toastT=setTimeout(()=>t.className='toast',2600);}
+function openModal(title,bodyHTML,footHTML){
+  $('#modal').innerHTML=`<div class="modal-h"><h3>${title}</h3><button class="x" onclick="closeModal()">×</button></div>
+    <div class="modal-b">${bodyHTML}</div>${footHTML?`<div class="modal-f">${footHTML}</div>`:''}`;
+  $('#modalBg').classList.add('show');
+}
+function closeModal(){$('#modalBg').classList.remove('show');}
+$('#modalBg').addEventListener('click',e=>{if(e.target===$('#modalBg'))closeModal();});
+
+/* ============================================================================
+   ROUTER
+   ========================================================================== */
+const TABS={dashboard:renderDashboard,daily:renderDaily,stock:renderStock,recipes:renderRecipes,reports:renderReports,count:renderCount,reorder:renderReorder,settings:renderSettings};
+let current='dashboard';
+function go(tab){current=tab;$$('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));TABS[tab]();refreshManagerUI();window.scrollTo(0,0);}
+$('#nav').addEventListener('click',e=>{const b=e.target.closest('button');if(b)go(b.dataset.tab);});
+function refreshBadges(){
+  const n=alertCount();const el=$('#navReorder');el.style.display=n?'inline-block':'none';el.textContent=n;
+  const due=countDue();const cb=$('#navCount');if(cb){cb.style.display=due?'inline-block':'none';
+    cb.textContent=due&&due.overdue?'!':'•';cb.style.background=due&&due.overdue?'var(--bad)':'var(--low)';}
+}
+
+/* ============================================================================
+   PAGE: DASHBOARD
+   ========================================================================== */
+function renderDashboard(){
+  const t=todayISO(),ws=weekStartISO(t),mk=monthKey(t)+'-01';
+  const aT=aggregate(t,t), aW=aggregate(ws,t), aM=aggregate(mk,t);
+  const rl=reorderList();
+  const low=rl.filter(r=>r.status!=='ok').sort((a,b)=>a.cover-b.cover);
+  const reorder=rl.filter(r=>r.status==='reorder'||r.status==='out');
+  // top services by material cost this month
+  const svcCost=Object.entries(aM.svc).map(([name,cnt])=>{const s=svcByName(name);return{name,cnt,cost:s?recipeCost(s)*cnt:0};}).sort((a,b)=>b.cost-a.cost).slice(0,6);
+  // top used products this month (by cost)
+  const topProd=Object.entries(aM.cbp).map(([sku,cost])=>({p:pBySku(sku),cost,qty:aM.ubp[sku]})).filter(x=>x.p).sort((a,b)=>b.cost-a.cost).slice(0,6);
+  const maxSvc=Math.max(1,...svcCost.map(s=>s.cost)),maxPrd=Math.max(1,...topProd.map(s=>s.cost));
+
+  $('#main').innerHTML=`
+  <div class="page-head"><div><h2>Dashboard</h2><p>ภาพรวมต้นทุน &amp; สต็อก · อัปเดต ${thDate(t)}</p></div>
+    <button class="btn gold" onclick="go('daily')">＋ บันทึกบริการวันนี้</button></div>
+  <div class="cards">
+    <div class="card accent"><div class="lab">มูลค่าสต็อกคงเหลือ</div><div class="val">${money(stockValue())}</div><div class="sub">${db.products.length} รายการสินค้า</div></div>
+    <div class="card"><div class="lab">ต้นทุนใช้วันนี้</div><div class="val">${money(aT.total)}</div><div class="sub">${aT.svcTotal} บริการ</div></div>
+    <div class="card"><div class="lab">ต้นทุนสัปดาห์นี้</div><div class="val">${money(aW.total)}</div><div class="sub">จ.${thDate(ws)} – ${thDate(t)}</div></div>
+    <div class="card"><div class="lab">ต้นทุนเดือนนี้</div><div class="val">${money(aM.total)}</div><div class="sub">${aM.svcTotal} บริการ · เฉลี่ย ${money(aM.svcTotal?aM.total/aM.svcTotal:0)}/ครั้ง</div></div>
+    <div class="card"><div class="lab">ต้องสั่งซื้อ</div><div class="val" style="color:var(--warn)">${reorder.length}<small> รายการ</small></div><div class="sub">${low.length} รายการต่ำกว่าเกณฑ์</div></div>
+    ${(()=>{const due=countDue();return `<div class="card" style="cursor:pointer${due?';border-color:'+(due.overdue?'var(--bad)':'var(--low)'):''}" onclick="go('count')">
+      <div class="lab">รอบนับสต็อก</div>
+      <div class="val" style="font-size:18px;color:${due?(due.overdue?'var(--bad)':'var(--low)'):'var(--ok)'}">${due?(due.overdue?'⚠ เกินกำหนด':'⏳ ค้างนับ'):'✓ นับครบแล้ว'}</div>
+      <div class="sub">${due?roundLabel(due.round)+' · ก่อน '+thDate(countDeadline(due.periodKey,due.round)):'รอบถัดไปยังไม่ถึงกำหนด'}</div></div>`;})()}
+  </div>
+
+  <div class="grid-2">
+    <div class="panel"><div class="panel-h"><h3>⚑ ใกล้หมด / ควรสั่งซื้อ</h3><a class="hint" href="#" onclick="go('reorder');return false">ดูทั้งหมด →</a></div>
+      <div class="table-wrap"><table><thead><tr><th>สินค้า</th><th class="num">คงเหลือ</th><th class="num">พอใช้ (วัน)</th><th>สถานะ</th></tr></thead><tbody>
+      ${low.length?low.slice(0,8).map(r=>`<tr><td><div>${esc(shortName(r.p.name))}</div><span class="sku">${r.p.sku}</span></td>
+        <td class="num">${qf(r.p.stock)} <span class="muted small">${r.p.unit}</span></td>
+        <td class="num">${r.cover===Infinity?'—':qf(Math.round(r.cover))}</td><td>${statusBadge(r.status)}</td></tr>`).join(''):`<tr><td colspan="4" class="empty">สต็อกเพียงพอทั้งหมด ✓</td></tr>`}
+      </tbody></table></div></div>
+
+    <div class="panel"><div class="panel-h"><h3>⚗ บริการที่กินต้นทุนวัตถุดิบสูงสุด (เดือนนี้)</h3></div>
+      <div class="panel-b">${svcCost.length?svcCost.map(s=>`
+        <div style="margin-bottom:11px"><div style="display:flex;justify-content:space-between;font-size:13px"><span>${esc(s.name)} <span class="muted small">×${s.cnt}</span></span><b>${money(s.cost)}</b></div>
+        <div class="bar"><i style="width:${s.cost/maxSvc*100}%"></i></div></div>`).join(''):`<div class="empty">ยังไม่มีข้อมูลบริการเดือนนี้</div>`}</div></div>
+  </div>
+
+  <div class="panel"><div class="panel-h"><h3>📦 สินค้าที่ถูกใช้มากที่สุด (เดือนนี้ · ตามมูลค่า)</h3></div>
+    <div class="table-wrap"><table><thead><tr><th>สินค้า</th><th>หมวด</th><th class="num">ปริมาณใช้</th><th class="num">ต้นทุนที่ใช้</th><th style="width:30%">สัดส่วน</th></tr></thead><tbody>
+    ${topProd.length?topProd.map(x=>`<tr><td>${esc(shortName(x.p.name))} <span class="sku">${x.p.sku}</span></td><td class="muted small">${x.p.category}</td>
+      <td class="num">${qf(x.qty)} ${x.p.unit}</td><td class="num"><b>${money(x.cost)}</b></td>
+      <td><div class="bar"><i style="width:${x.cost/maxPrd*100}%"></i></div></td></tr>`).join(''):`<tr><td colspan="5" class="empty">ยังไม่มีข้อมูล</td></tr>`}
+    </tbody></table></div></div>`;
+}
+function shortName(n){const m=n.match(/\(([^)]+)\)/);return m?m[1]:n;}
+
+/* ============================================================================
+   PAGE: DAILY SERVICE ENTRY
+   ========================================================================== */
+let dailyDraft={date:todayISO(),counts:{},choices:{}};
+function renderDaily(){
+  if(!dailyDraft.date)dailyDraft.date=todayISO();
+  if(!dailyDraft.choices)dailyDraft.choices={};
+  const cnts=dailyDraft.counts;
+  const existing=db.logs.filter(l=>l.date===dailyDraft.date);
+  $('#main').innerHTML=`
+  <div class="page-head"><div><h2>บันทึกบริการรายวัน</h2><p>เลือกวันที่ → ใส่จำนวนครั้ง (บริการเลือกกลิ่นให้ใส่ยอดรวมต่อกลิ่น) → ระบบหักสต็อก &amp; คำนวณต้นทุนอัตโนมัติ</p></div></div>
+  <div class="panel"><div class="panel-b toolbar">
+    <div class="field"><label class="fl">วันที่ให้บริการ</label><input type="date" id="dDate" value="${dailyDraft.date}" max="${todayISO()}"></div>
+    <div class="field" style="min-width:170px"><label class="fl">&nbsp;</label><button class="btn" onclick="clearDaily()">ล้างค่าที่กรอก</button></div>
+    <div style="flex:1"></div>
+    <div id="daySummary"></div>
+  </div></div>
+
+  ${existing.length?`<div class="panel"><div class="panel-h"><h3>บันทึกแล้วของวันนี้</h3><span class="hint">${existing.reduce((t,l)=>t+l.count,0)} บริการ — สต็อกถูกหักแล้ว</span></div>
+    <div class="table-wrap"><table><thead><tr><th>บริการ</th><th class="num">จำนวน</th><th>กลิ่นที่เลือก</th><th class="num">ต้นทุนวัตถุดิบ</th><th></th></tr></thead><tbody>
+    ${existing.map(l=>{const c=(logUsage(l)).reduce((t,u)=>t+u.cost,0);const ch=l.choices?choiceSummary(l.choices):'';return `<tr><td>${esc(l.service)}</td><td class="num">${l.count}</td><td class="small muted">${ch||'—'}</td><td class="num">${money(c)}</td>
+      <td class="right"><button class="btn sm danger" onclick="voidLog('${l.id}')">ยกเลิก (คืนสต็อก)</button></td></tr>`;}).join('')}
+    </tbody></table></div></div>`:''}
+
+  <div class="panel"><div class="panel-h"><h3>เลือกบริการ &amp; จำนวน</h3><span class="hint">${db.services.length} บริการ</span></div>
+    <div class="panel-b"><div class="svc-grid" id="svcGrid">
+    ${db.services.map(s=>{const mc=recipeCost(s);const v=cnts[s.id]||0;const choices=recipeChoices(s);return `
+      <div class="svc-card ${v>0?'has':''}" id="sc_${s.id}">
+        <div class="nm">${esc(s.name)}</div>
+        <div class="mc">วัตถุดิบ ${money(mc)}/ครั้ง · ${recipeItemCount(s)} รายการ${choices.length?' · <b style="color:var(--gold-d)">เลือกกลิ่นได้</b>':''}</div>
+        <div class="qty-row"><button onclick="bump('${s.id}',-1)">−</button>
+          <input type="number" min="0" id="q_${s.id}" value="${v||''}" placeholder="0" oninput="setCount('${s.id}',this.value)">
+          <button onclick="bump('${s.id}',1)">＋</button></div>
+        ${choices.map(g=>renderChoiceGroup(s,g)).join('')}
+      </div>`;}).join('')}
+    </div></div></div>
+
+  <div class="panel" id="previewPanel" style="display:none"><div class="panel-h"><h3>วัตถุดิบที่จะถูกใช้</h3><span class="hint">ตรวจก่อนบันทึก</span></div>
+    <div class="table-wrap"><table><thead><tr><th>สินค้า</th><th class="num">ใช้ไป</th><th class="num">คงเหลือหลังหัก</th><th class="num">ต้นทุน</th><th>สถานะ</th></tr></thead>
+    <tbody id="previewBody"></tbody></table></div></div>
+
+  <div style="display:flex;gap:10px;justify-content:flex-end;align-items:center;margin-top:6px">
+    <span id="dailyIssues" class="small" style="color:var(--bad);font-weight:600"></span>
+    <button class="btn primary" style="padding:12px 26px" onclick="saveDaily()">บันทึก &amp; หักสต็อก</button>
+  </div>`;
+  $('#dDate').addEventListener('change',e=>{dailyDraft.date=e.target.value;dailyDraft.counts={};dailyDraft.choices={};renderDaily();});
+  db.services.forEach(s=>updateChoiceRem(s.id));
+  updateDailyPreview();
+}
+function renderChoiceGroup(s,g){
+  const ch=(dailyDraft.choices[s.id]&&dailyDraft.choices[s.id][g.groupId])||{};
+  return `<div class="choice-grp"><div class="cg-h"><span>${esc(g.label)}</span><span class="cg-rem" id="rem_${s.id}_${g.groupId}"></span></div>
+    ${(g.options||[]).map(o=>`<div class="cg-row"><span>${esc(o.label)} <span class="sku">${o.sku}</span></span>
+      <input type="number" min="0" value="${ch[o.sku]||''}" placeholder="0" oninput="setChoice('${s.id}','${g.groupId}','${o.sku}',this.value)"></div>`).join('')}
+  </div>`;
+}
+function choiceSummary(choices){
+  const parts=[];
+  for(const gid in choices){for(const sku in choices[gid]){if(choices[gid][sku])parts.push(sku+':'+choices[gid][sku]);}}
+  return parts.join(' · ');
+}
+function setCount(id,v){const n=Math.max(0,parseInt(v)||0);if(n)dailyDraft.counts[id]=n;else delete dailyDraft.counts[id];
+  const card=$('#sc_'+id);if(card)card.classList.toggle('has',n>0);updateChoiceRem(id);updateDailyPreview();}
+function bump(id,d){const cur=dailyDraft.counts[id]||0;const n=Math.max(0,cur+d);const inp=$('#q_'+id);if(inp)inp.value=n||'';setCount(id,n);}
+function setChoice(id,gid,sku,v){const n=Math.max(0,parseInt(v)||0);
+  dailyDraft.choices[id]=dailyDraft.choices[id]||{};dailyDraft.choices[id][gid]=dailyDraft.choices[id][gid]||{};
+  if(n)dailyDraft.choices[id][gid][sku]=n;else delete dailyDraft.choices[id][gid][sku];
+  updateChoiceRem(id);updateDailyPreview();}
+function updateChoiceRem(id){
+  const s=svcById(id);if(!s)return;const count=dailyDraft.counts[id]||0;
+  recipeChoices(s).forEach(g=>{
+    const sel=(dailyDraft.choices[id]&&dailyDraft.choices[id][g.groupId])||{};
+    const sum=Object.values(sel).reduce((a,b)=>a+b,0);const el=$('#rem_'+id+'_'+g.groupId);if(!el)return;
+    const diff=count-sum;
+    if(count===0&&sum===0){el.textContent='';el.className='cg-rem';}
+    else if(diff===0){el.textContent='✓ ครบ';el.className='cg-rem ok';}
+    else if(diff>0){el.textContent='ขาด '+diff;el.className='cg-rem bad';}
+    else{el.textContent='เกิน '+(-diff);el.className='cg-rem bad';}
+  });
+}
+function clearDaily(){dailyDraft.counts={};dailyDraft.choices={};renderDaily();}
+/* compute usage for one service+count; choice groups distribute by selected scent counts */
+function computeServiceUsage(s,count){
+  const map={};let valid=true;const problems=[];const choicesOut={};
+  for(const r of s.recipe){
+    if(r.type==='choice'){
+      const sel=(dailyDraft.choices[s.id]&&dailyDraft.choices[s.id][r.groupId])||{};
+      const sum=Object.values(sel).reduce((a,b)=>a+b,0);
+      if(sum!==count){valid=false;problems.push({group:r.label,need:count,have:sum});}
+      choicesOut[r.groupId]=Object.assign({},sel);
+      for(const sku in sel){if(!sel[sku])continue;map[sku]=(map[sku]||0)+r.qty*sel[sku];}
+    }else{map[r.sku]=(map[r.sku]||0)+r.qty*count;}
+  }
+  const usage=Object.keys(map).filter(sku=>pBySku(sku)).map(sku=>{const p=pBySku(sku);return{sku,qty:map[sku],cost:+(map[sku]*p.cost).toFixed(4)};});
+  return {usage,choices:choicesOut,valid,problems};
+}
+function computeDraftUsage(){
+  const ubp={};let cost=0,total=0;const issues=[];
+  for(const id in dailyDraft.counts){const cnt=dailyDraft.counts[id];const s=svcById(id);if(!s||!cnt)continue;total+=cnt;
+    const r=computeServiceUsage(s,cnt);if(!r.valid)issues.push({name:s.name,problems:r.problems});
+    for(const u of r.usage){ubp[u.sku]=(ubp[u.sku]||0)+u.qty;cost+=u.cost;}}
+  return {ubp,cost,total,issues};
+}
+function updateDailyPreview(){
+  const {ubp,cost,total,issues}=computeDraftUsage();
+  const sum=$('#daySummary');if(sum)sum.innerHTML=`<div style="text-align:right"><div class="muted small">รวมร่าง</div><div style="font-size:19px;font-weight:600">${total} บริการ · ${money(cost)}</div></div>`;
+  const iss=$('#dailyIssues');if(iss)iss.textContent=issues.length?('⚠ ยังระบุกลิ่นไม่ครบ '+issues.length+' บริการ'):'';
+  const pv=$('#previewPanel'),body=$('#previewBody');if(!pv)return;
+  const keys=Object.keys(ubp);
+  if(!keys.length){pv.style.display='none';return;}
+  pv.style.display='';
+  body.innerHTML=keys.map(sku=>{const p=pBySku(sku);const used=ubp[sku];const after=p.stock-used;const short=after<0;
+    return `<tr><td>${esc(shortName(p.name))} <span class="sku">${sku}</span></td>
+    <td class="num">${qf(used)} ${p.unit}</td><td class="num" style="${short?'color:var(--bad);font-weight:600':''}">${qf(after)}</td>
+    <td class="num">${money(used*p.cost)}</td><td>${short?'<span class="badge b-bad">ไม่พอ</span>':'<span class="badge b-ok">พอ</span>'}</td></tr>`;}).join('');
+}
+function saveDaily(){
+  const {ubp,total,issues}=computeDraftUsage();
+  if(!total){toast('ยังไม่ได้เลือกบริการ','bad');return;}
+  if(issues.length){ // choice scents must sum to service count
+    openModal('⚠ ยอดกลิ่นไม่ครบ',
+      `<p class="muted small">ต้องระบุจำนวนแต่ละกลิ่นให้รวมเท่ากับจำนวนบริการก่อนบันทึก</p>
+       ${issues.map(it=>`<div style="margin-bottom:8px"><b>${esc(it.name)}</b>${it.problems.map(p=>`<div class="small">• ${esc(p.group)}: ระบุ ${p.have}/${p.need} ${p.have<p.need?'(ขาด '+(p.need-p.have)+')':'(เกิน '+(p.have-p.need)+')'}</div>`).join('')}</div>`).join('')}`,
+      `<button class="btn gold" onclick="closeModal()">เข้าใจแล้ว</button>`);
+    return;
+  }
+  const shorts=Object.keys(ubp).map(sku=>({p:pBySku(sku),need:ubp[sku]})).filter(x=>x.p&&x.p.stock<x.need);
+  const commit=async()=>{
+    const entries=[];
+    for(const id in dailyDraft.counts){const cnt=dailyDraft.counts[id];const s=svcById(id);if(!s||!cnt)continue;
+      const r=computeServiceUsage(s,cnt);
+      entries.push({id:uid(),date:dailyDraft.date,service:s.name,serviceId:s.id,count:cnt,usage:r.usage,choices:r.choices});}
+    closeModal();
+    for(const e of entries){if(!await guard(api.logService(e)))return;}
+    for(const e of entries){db.logs.push(e);for(const u of e.usage){const p=pBySku(u.sku);if(p)p.stock=+(p.stock-u.qty).toFixed(2);}}
+    dailyDraft.counts={};dailyDraft.choices={};toast('บันทึกแล้ว — หักสต็อกเรียบร้อย','ok');refreshBadges();renderDaily();
+  };
+  if(shorts.length){
+    openModal('⚠ สต็อกไม่พอ',
+      `<p class="muted">มีสินค้าบางรายการไม่พอสำหรับบริการที่บันทึก — ยืนยันบันทึกต่อไป (สต็อกจะติดลบ) หรือยกเลิกเพื่อแก้ไข?</p>
+       <table><thead><tr><th>สินค้า</th><th class="num">ต้องใช้</th><th class="num">คงเหลือ</th></tr></thead><tbody>
+       ${shorts.map(x=>`<tr><td>${esc(shortName(x.p.name))} <span class="sku">${x.p.sku}</span></td><td class="num">${qf(x.need)}</td><td class="num" style="color:var(--bad)">${qf(x.p.stock)}</td></tr>`).join('')}</tbody></table>`,
+      `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="window._commitDaily()">ยืนยันบันทึก</button>`);
+    window._commitDaily=commit;return;
+  }
+  commit();
+}
+function voidLog(id){requireManager(()=>_voidLog(id));}                        // gated: affects stock
+async function _voidLog(id){
+  const lg=db.logs.find(l=>l.id===id);if(!lg)return;
+  if(!await guard(api.voidLog(id),'ยกเลิกรายการ — คืนสต็อกแล้ว'))return;
+  for(const u of logUsage(lg)){const p=pBySku(u.sku);if(p)p.stock=+(p.stock+u.qty).toFixed(2);} // restore by snapshot
+  db.logs=db.logs.filter(l=>l.id!==id);refreshBadges();renderDaily();
+}
+
+/* ============================================================================
+   PAGE: STOCK ITEMS  (CRUD)
+   ========================================================================== */
+let stockFilter={cat:'',q:''};
+function renderStock(){
+  const cats=[...new Set(db.products.map(p=>p.category))];
+  let list=db.products.filter(p=>(!stockFilter.cat||p.category===stockFilter.cat)&&(!stockFilter.q||(p.name+p.sku).toLowerCase().includes(stockFilter.q.toLowerCase())));
+  $('#main').innerHTML=`
+  <div class="page-head"><div><h2>คลังสินค้า</h2><p>${db.products.length} รายการ · มูลค่ารวม ${money(stockValue())}</p></div>
+    <button class="btn gold" onclick="editProduct()">＋ เพิ่มสินค้า</button></div>
+  <div class="panel"><div class="panel-b toolbar">
+    <div class="field" style="min-width:200px"><label class="fl">ค้นหา</label><input id="stQ" placeholder="ชื่อ หรือ SKU" value="${esc(stockFilter.q)}"></div>
+    <div class="field"><label class="fl">หมวดหมู่</label><select id="stCat"><option value="">ทั้งหมด</option>${cats.map(c=>`<option ${stockFilter.cat===c?'selected':''}>${c}</option>`).join('')}</select></div>
+    <div style="flex:1"></div>
+    <div class="field"><label class="fl">&nbsp;</label><button class="btn" onclick="exportData()">⤓ Export JSON</button></div>
+  </div></div>
+  <div class="panel"><div class="table-wrap"><table><thead><tr>
+    <th>สินค้า</th><th>หมวด</th><th class="num">ต้นทุน/หน่วย</th><th class="num">คงเหลือ</th><th class="num">ขั้นต่ำ</th><th class="num">มูลค่า</th><th>สั่งจาก</th><th>สถานะ</th><th></th>
+  </tr></thead><tbody>
+  ${list.length?list.map(p=>{const ri=reorderInfo(p);return `<tr>
+    <td><div>${esc(p.name)}</div><span class="sku">${p.sku}</span></td>
+    <td class="muted small">${p.category}</td>
+    <td class="num">${money2(p.cost)}</td>
+    <td class="num"><b>${qf(p.stock)}</b> <span class="muted small">${p.unit}</span></td>
+    <td class="num muted">${qf(p.minStock)}</td>
+    <td class="num">${money(p.stock*p.cost)}</td>
+    <td class="small">${p.supplierName?esc(p.supplierName)+(p.orderUrl?` <a href="${esc(p.orderUrl)}" target="_blank" rel="noopener">↗</a>`:''):'<span class="muted">—</span>'}</td>
+    <td>${statusBadge(ri.status)}</td>
+    <td class="right"><div class="row-actions">
+      <button class="btn sm" onclick="quickStock('${p.sku}')">ปรับ</button>
+      <button class="btn sm" onclick="editProduct('${p.sku}')">แก้ไข</button>
+      <button class="btn sm danger" onclick="delProduct('${p.sku}')">ลบ</button></div></td>
+  </tr>`;}).join(''):`<tr><td colspan="9" class="empty">ไม่พบสินค้า</td></tr>`}
+  </tbody></table></div></div>
+
+  <div class="panel"><div class="panel-h"><h3>🧾 ประวัติการปรับสต็อก (Audit log)</h3><span class="hint">${db.adjustments.length} รายการ · แสดง 15 ล่าสุด</span></div>
+    <div class="table-wrap"><table><thead><tr><th>เวลา</th><th>สินค้า</th><th class="num">จาก</th><th class="num">เป็น</th><th class="num">เปลี่ยน</th><th>เหตุผล</th></tr></thead><tbody>
+    ${db.adjustments.length?db.adjustments.slice(0,15).map(a=>`<tr>
+      <td class="small muted">${new Date(a.ts).toLocaleString('th-TH',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
+      <td>${esc(shortName(a.productName))} <span class="sku">${a.sku}</span></td>
+      <td class="num">${qf(a.from)}</td><td class="num">${qf(a.to)}</td>
+      <td class="num" style="color:${a.delta<0?'var(--bad)':'var(--ok)'};font-weight:600">${a.delta>0?'+':''}${qf(a.delta)}</td>
+      <td class="small">${esc(a.reason)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">ยังไม่มีการปรับสต็อก</td></tr>'}
+    </tbody></table></div></div>`;
+  $('#stQ').addEventListener('input',e=>{stockFilter.q=e.target.value;renderStockTableOnly();});
+  $('#stCat').addEventListener('change',e=>{stockFilter.cat=e.target.value;renderStock();});
+}
+function renderStockTableOnly(){renderStock();$('#stQ').focus();const v=$('#stQ').value;$('#stQ').setSelectionRange(v.length,v.length);}
+/* ปรับ stock — gated + บังคับใส่เหตุผล + บันทึก audit log */
+function quickStock(sku){requireManager(()=>_quickStock(sku));}
+function _quickStock(sku){const p=pBySku(sku);
+  openModal('ปรับจำนวนคงเหลือ — '+shortName(p.name),
+    `<div class="field"><label class="fl">จำนวนคงเหลือจริง (${p.unit})</label><input id="qs" type="number" value="${p.stock}"></div>
+     <div class="field"><label class="fl">เหตุผล (บังคับ)</label><select id="qsReason">
+       <option value="">— เลือกเหตุผล —</option><option>นับ stock จริง</option><option>ของเสีย</option><option>รับของเข้า</option><option>แก้รายการผิด</option><option>อื่นๆ</option></select></div>
+     <div class="field"><label class="fl">หมายเหตุเพิ่มเติม (ถ้ามี)</label><input id="qsNote" placeholder=""></div>
+     <p class="muted small">การปรับจะถูกบันทึกในประวัติ (audit log)</p>`,
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="saveQuickStock('${sku}')">บันทึก</button>`);
+  setTimeout(()=>$('#qs').focus(),50);
+}
+/* optimistic local copy of an audit row (server writes the authoritative one) */
+function pushAdj(sku,from,to,reason){if(+from===+to)return;const p=pBySku(sku);
+  db.adjustments.unshift({id:uid(),ts:new Date().toISOString(),sku,productName:p?p.name:sku,
+    from:+from,to:+to,delta:+(+to-+from).toFixed(2),reason:reason||'',actor:currentUser?currentUser.email:''});}
+async function saveQuickStock(sku){const p=pBySku(sku);const to=+(parseFloat($('#qs').value)||0);
+  const reason=$('#qsReason').value;if(!reason){toast('กรุณาเลือกเหตุผล','bad');return;}
+  const note=$('#qsNote').value.trim();const full=reason+(note?' — '+note:'');
+  if(to===p.stock){closeModal();return;}
+  if(!await guard(api.adjustStock(sku,to,full),'อัปเดตคงเหลือแล้ว'))return;
+  pushAdj(sku,p.stock,to,full);p.stock=to;
+  closeModal();refreshBadges();renderStock();}
+function editProduct(sku){requireManager(()=>_editProduct(sku));}
+function _editProduct(sku){
+  const p=sku?pBySku(sku):{sku:'',name:'',category:'Skin Care',unit:'ซอง',cost:0,stock:0,minStock:5,reorderQty:10,monthlyUsage:0,sachetSize:null,supplierName:'',orderChannel:'',orderUrl:'',contact:'',leadTimeDays:'',packSize:'',supplierNotes:''};
+  const cats=['Skin Care','Hair Care','Liquid DIY','Facial Care','Powder DIY','Herbal Balms & Aroma','Fresh DIY','Cleaning','Consumable','Miscellaneous','Other'];
+  openModal(sku?'แก้ไขสินค้า':'เพิ่มสินค้าใหม่',
+    `<div class="f2">
+      <div class="field"><label class="fl">SKU</label><input id="f_sku" value="${esc(p.sku)}" ${sku?'disabled':''} placeholder="เช่น SC09"></div>
+      <div class="field"><label class="fl">หมวดหมู่</label><select id="f_cat">${cats.map(c=>`<option ${p.category===c?'selected':''}>${c}</option>`).join('')}</select></div>
+     </div>
+     <div class="field"><label class="fl">ชื่อสินค้า</label><input id="f_name" value="${esc(p.name)}" placeholder="ชื่อ (ภาษาไทย / อังกฤษ)"></div>
+     <div class="f2">
+      <div class="field"><label class="fl">หน่วยนับ</label><input id="f_unit" value="${esc(p.unit)}" placeholder="ซอง / ขวด / ชิ้น / ml"></div>
+      <div class="field"><label class="fl">ต้นทุน/หน่วย (฿)</label><input id="f_cost" type="number" step="0.01" value="${p.cost}"></div>
+      <div class="field"><label class="fl">คงเหลือปัจจุบัน</label><input id="f_stock" type="number" step="0.01" value="${p.stock}"></div>
+      <div class="field"><label class="fl">ขั้นต่ำที่ควรมี</label><input id="f_min" type="number" value="${p.minStock}"></div>
+      <div class="field"><label class="fl">จำนวนที่สั่งต่อครั้ง</label><input id="f_ro" type="number" value="${p.reorderQty}"></div>
+      <div class="field"><label class="fl">ขนาด/ซอง (g, ไม่บังคับ)</label><input id="f_size" type="number" step="0.1" value="${p.sachetSize==null?'':p.sachetSize}"></div>
+     </div>
+     <div style="border-top:1px solid var(--line);margin:4px 0 12px;padding-top:11px"><b class="small">ข้อมูลสั่งซื้อ (Supplier)</b></div>
+     <div class="f2">
+      <div class="field"><label class="fl">ผู้ขาย / ร้าน</label><input id="f_sup" value="${esc(p.supplierName||'')}"></div>
+      <div class="field"><label class="fl">ช่องทางสั่ง</label><input id="f_chan" value="${esc(p.orderChannel||'')}" placeholder="Line / โทร / Shopee / Lazada"></div>
+      <div class="field"><label class="fl">ลิงก์สั่งซื้อ</label><input id="f_url" value="${esc(p.orderUrl||'')}" placeholder="https://"></div>
+      <div class="field"><label class="fl">ผู้ติดต่อ / เบอร์</label><input id="f_contact" value="${esc(p.contact||'')}"></div>
+      <div class="field"><label class="fl">Lead time (วัน)</label><input id="f_lead" type="number" value="${p.leadTimeDays===''||p.leadTimeDays==null?'':p.leadTimeDays}"></div>
+      <div class="field"><label class="fl">Pack size</label><input id="f_pack" value="${esc(p.packSize||'')}" placeholder="เช่น 50 ซอง/แพ็ค"></div>
+     </div>
+     <div class="field"><label class="fl">หมายเหตุผู้ขาย</label><input id="f_snote" value="${esc(p.supplierNotes||'')}"></div>`,
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="saveProduct('${sku||''}')">บันทึก</button>`);
+}
+async function saveProduct(sku){
+  const nsku=sku||$('#f_sku').value.trim().toUpperCase();
+  if(!nsku){toast('ใส่ SKU','bad');return;}
+  if(!sku&&pBySku(nsku)){toast('SKU ซ้ำ','bad');return;}
+  const name=$('#f_name').value.trim();if(!name){toast('ใส่ชื่อสินค้า','bad');return;}
+  const newStock=+(parseFloat($('#f_stock').value)||0);
+  const existing=sku?pBySku(sku):null;
+  const obj={sku:nsku,name,category:$('#f_cat').value,unit:$('#f_unit').value.trim()||'ชิ้น',
+    cost:+(parseFloat($('#f_cost').value)||0),stock:newStock,
+    minStock:+(parseInt($('#f_min').value)||0),reorderQty:+(parseInt($('#f_ro').value)||0),
+    sachetSize:$('#f_size').value===''?null:+parseFloat($('#f_size').value),
+    supplierName:$('#f_sup').value.trim(),orderChannel:$('#f_chan').value.trim(),orderUrl:$('#f_url').value.trim(),
+    contact:$('#f_contact').value.trim(),leadTimeDays:$('#f_lead').value===''?'':+parseInt($('#f_lead').value),
+    packSize:$('#f_pack').value.trim(),supplierNotes:$('#f_snote').value.trim(),
+    monthlyUsage:existing?existing.monthlyUsage:0};
+  if(!await guard(api.saveProduct(obj,'แก้ผ่านฟอร์มสินค้า'),'บันทึกสินค้าแล้ว'))return;
+  if(existing){if(newStock!==existing.stock)pushAdj(sku,existing.stock,newStock,'แก้ผ่านฟอร์มสินค้า');Object.assign(existing,obj);}
+  else db.products.push(obj);
+  closeModal();refreshBadges();renderStock();
+}
+function delProduct(sku){requireManager(()=>_delProduct(sku));}
+function _delProduct(sku){const p=pBySku(sku);
+  const used=db.services.filter(s=>(s.recipe||[]).some(r=>r.type==='choice'?(r.options||[]).some(o=>o.sku===sku):r.sku===sku)).map(s=>s.name);
+  openModal('ลบสินค้า',`<p>ยืนยันลบ <b>${esc(shortName(p.name))}</b> (${sku})?</p>
+    ${used.length?`<p class="muted small">⚠ สินค้านี้อยู่ในสูตรของ ${used.length} บริการ: ${used.map(esc).join(', ')} — จะถูกถอดออกจากสูตรด้วย</p>`:''}`,
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn danger" onclick="confirmDelProduct('${sku}')">ลบ</button>`);
+}
+async function confirmDelProduct(sku){
+  if(!await guard(api.deleteProduct(sku),'ลบแล้ว'))return;
+  db.products=db.products.filter(p=>p.sku!==sku);
+  const affected=[];
+  db.services.forEach(s=>{const before=JSON.stringify(s.recipe);
+    s.recipe=(s.recipe||[]).filter(r=>r.type==='choice'?true:r.sku!==sku);
+    s.recipe.forEach(r=>{if(r.type==='choice')r.options=(r.options||[]).filter(o=>o.sku!==sku);});
+    s.recipe=s.recipe.filter(r=>r.type==='choice'?(r.options||[]).length:true);
+    if(JSON.stringify(s.recipe)!==before)affected.push(s);});
+  for(const s of affected)await guard(api.saveService(s)); // persist recipe cleanup
+  closeModal();refreshBadges();renderStock();}
+
+/* ============================================================================
+   PAGE: SERVICE RECIPES
+   ========================================================================== */
+function renderRecipes(){
+  $('#main').innerHTML=`
+  <div class="page-head"><div><h2>สูตรการใช้สินค้าต่อบริการ</h2><p>กำหนดว่า 1 บริการใช้สินค้าอะไร เท่าไร — ใช้คำนวณการหักสต็อก &amp; ต้นทุน</p></div>
+    <button class="btn gold" onclick="editRecipe()">＋ เพิ่มบริการ</button></div>
+  <div class="panel"><div class="table-wrap"><table><thead><tr>
+    <th>บริการ</th><th class="num">จำนวนวัตถุดิบ</th><th>รายการ (ย่อ)</th><th class="num">ต้นทุน/ครั้ง</th><th></th>
+  </tr></thead><tbody>
+  ${db.services.map(s=>{const items=s.recipe||[];return `<tr>
+    <td><b>${esc(s.name)}</b></td>
+    <td class="num">${items.length}</td>
+    <td>${items.length?items.slice(0,5).map(r=>r.type==='choice'
+        ?`<span class="tag" style="border-color:var(--gold);color:var(--gold-d)">${esc(r.label)}: ${(r.options||[]).map(o=>o.sku).join('/')}×${qf(r.qty)}</span>`
+        :`<span class="tag">${esc(r.sku)}×${qf(r.qty)}</span>`).join(' ')+(items.length>5?` <span class="muted small">+${items.length-5}</span>`:''):'<span class="muted small">— ยังไม่มีสูตร —</span>'}</td>
+    <td class="num"><b>${money(recipeCost(s))}</b></td>
+    <td class="right"><div class="row-actions">
+      <button class="btn sm" onclick="editRecipe('${s.id}')">แก้สูตร</button>
+      <button class="btn sm danger" onclick="delService('${s.id}')">ลบ</button></div></td>
+  </tr>`;}).join('')}
+  </tbody></table></div></div>`;
+}
+let recipeDraft=[];
+function editRecipe(id){requireManager(()=>_editRecipe(id));}
+function _editRecipe(id){
+  const s=id?svcById(id):{name:'',recipe:[]};
+  // deep clone draft, preserving item types
+  recipeDraft=(s.recipe||[]).map(r=>r.type==='choice'
+    ?{type:'choice',groupId:r.groupId||('grp_'+uid()),label:r.label||'กลุ่มเลือก',qty:r.qty,options:(r.options||[]).map(o=>({sku:o.sku,label:o.label}))}
+    :{type:'fixed',sku:r.sku,qty:r.qty});
+  openModal(id?'แก้สูตร — '+esc(s.name):'เพิ่มบริการใหม่',
+    `<div class="field"><label class="fl">ชื่อบริการ</label><input id="r_name" value="${esc(s.name)}" placeholder="เช่น ASMR XL"></div>
+     <label class="fl">วัตถุดิบที่ใช้ต่อ 1 ครั้ง</label>
+     <div id="rcpRows"></div>
+     <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
+       <button class="btn sm" onclick="addRcpRow()">＋ วัตถุดิบคงที่</button>
+       <button class="btn sm" onclick="addChoiceRow()">＋ กลุ่มลูกค้าเลือกเอง (เช่น กลิ่น)</button></div>
+     <div class="kv" style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px"><span>ต้นทุนวัตถุดิบรวม/ครั้ง (ประมาณ)</span><b id="rcpCost">฿0</b></div>`,
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="saveRecipe('${id||''}')">บันทึกสูตร</button>`);
+  drawRcpRows();
+}
+function prodOptions(sel){return db.products.map(p=>`<option value="${p.sku}" ${p.sku===sel?'selected':''}>${p.sku} · ${esc(shortName(p.name))}</option>`).join('');}
+function drawRcpRows(){
+  $('#rcpRows').innerHTML=recipeDraft.map((r,i)=>{
+    if(r.type==='choice'){
+      return `<div style="border:1px solid var(--gold);border-radius:10px;padding:10px;margin-bottom:8px;background:#fffdf9">
+        <div class="rcp-row" style="grid-template-columns:1fr 90px 36px">
+          <input value="${esc(r.label)}" placeholder="ชื่อกลุ่ม (เช่น กลิ่นน้ำมัน)" oninput="recipeDraft[${i}].label=this.value">
+          <input type="number" step="0.1" min="0" value="${r.qty}" oninput="recipeDraft[${i}].qty=parseFloat(this.value)||0;calcRcp()" title="ปริมาณต่อ 1 ครั้ง">
+          <button class="btn sm danger" onclick="recipeDraft.splice(${i},1);drawRcpRows()">×</button></div>
+        <div class="small muted" style="margin:2px 0 6px">ตัวเลือกที่ลูกค้าเลือกได้:</div>
+        ${(r.options||[]).map((o,j)=>`<div class="opt-row">
+          <select onchange="recipeDraft[${i}].options[${j}].sku=this.value;calcRcp()">${prodOptions(o.sku)}</select>
+          <input value="${esc(o.label||'')}" placeholder="ชื่อกลิ่น/ตัวเลือก" oninput="recipeDraft[${i}].options[${j}].label=this.value">
+          <button class="btn sm danger" onclick="recipeDraft[${i}].options.splice(${j},1);drawRcpRows()">×</button></div>`).join('')}
+        <button class="btn sm" onclick="addOption(${i})">＋ ตัวเลือก</button>
+      </div>`;
+    }
+    return `<div class="rcp-row">
+      <select onchange="recipeDraft[${i}].sku=this.value;calcRcp()">${prodOptions(r.sku)}</select>
+      <input type="number" step="0.1" min="0" value="${r.qty}" oninput="recipeDraft[${i}].qty=parseFloat(this.value)||0;calcRcp()">
+      <button class="btn sm danger" onclick="recipeDraft.splice(${i},1);drawRcpRows()">×</button></div>`;
+  }).join('')||'<p class="muted small">ยังไม่มีวัตถุดิบ — กดเพิ่มด้านล่าง</p>';
+  calcRcp();
+}
+function addRcpRow(){recipeDraft.push({type:'fixed',sku:db.products[0].sku,qty:1});drawRcpRows();}
+function addChoiceRow(){recipeDraft.push({type:'choice',groupId:'grp_'+uid(),label:'กลิ่นน้ำมันนวด',qty:1,options:OIL_OPTS.slice()});drawRcpRows();}
+function addOption(i){recipeDraft[i].options=recipeDraft[i].options||[];recipeDraft[i].options.push({sku:db.products[0].sku,label:''});drawRcpRows();}
+function calcRcp(){const c=recipeDraft.reduce((t,r)=>t+itemCost(r),0);const el=$('#rcpCost');if(el)el.textContent=money(c);}
+async function saveRecipe(id){
+  const name=$('#r_name').value.trim();if(!name){toast('ใส่ชื่อบริการ','bad');return;}
+  const recipe=recipeDraft.map(r=>{
+    if(r.type==='choice'){const options=(r.options||[]).filter(o=>o.sku);
+      if(!options.length||!(r.qty>0)||!r.label.trim())return null;
+      return {type:'choice',groupId:r.groupId||('grp_'+uid()),label:r.label.trim(),qty:r.qty,options:options.map(o=>({sku:o.sku,label:o.label||o.sku}))};}
+    return (r.sku&&r.qty>0)?{type:'fixed',sku:r.sku,qty:r.qty}:null;
+  }).filter(Boolean);
+  if(!id&&svcByName(name)){toast('ชื่อบริการซ้ำ','bad');return;}
+  const obj={id:id||uid(),name,recipe};
+  if(!await guard(api.saveService(obj),'บันทึกสูตรแล้ว'))return;
+  if(id){const s=svcById(id);s.name=name;s.recipe=recipe;}
+  else db.services.push(obj);
+  closeModal();renderRecipes();
+}
+function delService(id){requireManager(()=>_delService(id));}
+function _delService(id){const s=svcById(id);
+  openModal('ลบบริการ',`<p>ยืนยันลบบริการ <b>${esc(s.name)}</b>? <br><span class="muted small">ประวัติการบันทึกเดิมยังคงอยู่ในรายงาน</span></p>`,
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn danger" onclick="confirmDelService('${id}')">ลบ</button>`);
+}
+async function confirmDelService(id){
+  if(!await guard(api.deleteService(id),'ลบบริการแล้ว'))return;
+  db.services=db.services.filter(s=>s.id!==id);closeModal();renderRecipes();}
+
+/* ============================================================================
+   PAGE: REPORTS
+   ========================================================================== */
+let rep={mode:'day',date:todayISO(),svc:'',sku:''};
+function reportRange(){
+  if(rep.mode==='day')return[rep.date,rep.date,'รายวัน · '+thDate(rep.date)];
+  if(rep.mode==='week'){const ws=weekStartISO(rep.date);return[ws,addDays(ws,6),'รายสัปดาห์ · จ.'+thDate(ws)+' – อา.'+thDate(addDays(ws,6))];}
+  const mk=monthKey(rep.date);const first=mk+'-01';const d=fromISO(first);const last=toISO(new Date(d.getFullYear(),d.getMonth()+1,0));
+  return[first,last,'รายเดือน · '+fromISO(first).toLocaleDateString('th-TH',{month:'long',year:'numeric'})];
+}
+function renderReports(){
+  const[from,to,label]=reportRange();
+  // apply service filter to a custom aggregate
+  const a=aggregateFiltered(from,to,rep.svc,rep.sku);
+  const svcRows=Object.entries(a.svc).sort((x,y)=>y[1]-x[1]);
+  const prodRows=Object.keys(a.ubp).map(sku=>({p:pBySku(sku),qty:a.ubp[sku],cost:a.cbp[sku]})).filter(x=>x.p).sort((x,y)=>y.cost-x.cost);
+  $('#main').innerHTML=`
+  <div class="page-head"><div><h2>รายงาน</h2><p>${label}</p></div></div>
+  <div class="panel"><div class="panel-b toolbar">
+    <div class="seg"><button class="${rep.mode==='day'?'active':''}" onclick="rep.mode='day';renderReports()">รายวัน</button>
+      <button class="${rep.mode==='week'?'active':''}" onclick="rep.mode='week';renderReports()">รายสัปดาห์</button>
+      <button class="${rep.mode==='month'?'active':''}" onclick="rep.mode='month';renderReports()">รายเดือน</button></div>
+    <div class="field"><label class="fl">${rep.mode==='month'?'เดือน':'วันที่อ้างอิง'}</label>
+      <input type="${rep.mode==='month'?'month':'date'}" id="rDate" value="${rep.mode==='month'?monthKey(rep.date):rep.date}"></div>
+    <div class="field"><label class="fl">กรองบริการ</label><select id="rSvc"><option value="">ทุกบริการ</option>${db.services.map(s=>`<option ${rep.svc===s.name?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>
+    <div class="field"><label class="fl">กรองสินค้า</label><select id="rSku"><option value="">ทุกสินค้า</option>${db.products.map(p=>`<option value="${p.sku}" ${rep.sku===p.sku?'selected':''}>${p.sku} · ${esc(shortName(p.name))}</option>`).join('')}</select></div>
+    <div style="flex:1"></div>
+    <div class="field"><label class="fl">&nbsp;</label><button class="btn" onclick="exportReportCSV()">⤓ CSV</button></div>
+  </div></div>
+
+  <div class="cards">
+    <div class="card"><div class="lab">จำนวนบริการรวม</div><div class="val">${a.svcTotal}</div></div>
+    <div class="card accent"><div class="lab">ต้นทุนวัตถุดิบรวม</div><div class="val">${money(a.total)}</div></div>
+    <div class="card"><div class="lab">ต้นทุนเฉลี่ย/บริการ</div><div class="val">${money(a.svcTotal?a.total/a.svcTotal:0)}</div></div>
+    <div class="card"><div class="lab">จำนวนสินค้าที่ใช้</div><div class="val">${Object.keys(a.ubp).length}<small> รายการ</small></div></div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel"><div class="panel-h"><h3>สรุปตามบริการ</h3></div><div class="table-wrap"><table>
+      <thead><tr><th>บริการ</th><th class="num">ครั้ง</th><th class="num">ต้นทุนวัตถุดิบ</th></tr></thead><tbody>
+      ${svcRows.length?svcRows.map(([n,c])=>{const s=svcByName(n);return `<tr><td>${esc(n)}</td><td class="num">${c}</td><td class="num">${money(s?recipeCost(s)*c:0)}</td></tr>`;}).join(''):'<tr><td colspan="3" class="empty">ไม่มีข้อมูลในช่วงนี้</td></tr>'}
+      </tbody></table></div></div>
+
+    <div class="panel"><div class="panel-h"><h3>สรุปตามสินค้า</h3></div><div class="table-wrap"><table>
+      <thead><tr><th>สินค้า</th><th class="num">ปริมาณ</th><th class="num">ต้นทุน</th></tr></thead><tbody>
+      ${prodRows.length?prodRows.map(x=>`<tr><td>${esc(shortName(x.p.name))} <span class="sku">${x.p.sku}</span></td><td class="num">${qf(x.qty)} ${x.p.unit}</td><td class="num">${money(x.cost)}</td></tr>`).join(''):'<tr><td colspan="3" class="empty">ไม่มีข้อมูล</td></tr>'}
+      </tbody></table></div></div>
+  </div>`;
+  $('#rDate').addEventListener('change',e=>{rep.date=rep.mode==='month'?e.target.value+'-01':e.target.value;renderReports();});
+  $('#rSvc').addEventListener('change',e=>{rep.svc=e.target.value;renderReports();});
+  $('#rSku').addEventListener('change',e=>{rep.sku=e.target.value;renderReports();});
+}
+function aggregateFiltered(from,to,svcName,sku){
+  const ubp={},cbp={},svc={};let total=0,svcTotal=0;
+  for(const lg of db.logs){
+    if(lg.date<from||lg.date>to)continue;
+    if(svcName&&lg.service!==svcName)continue;
+    svc[lg.service]=(svc[lg.service]||0)+lg.count;svcTotal+=lg.count;
+    for(const u of logUsage(lg)){if(sku&&u.sku!==sku)continue;ubp[u.sku]=(ubp[u.sku]||0)+u.qty;cbp[u.sku]=(cbp[u.sku]||0)+u.cost;total+=u.cost;}
+  }
+  return {ubp,cbp,total,svc,svcTotal};
+}
+function exportReportCSV(){
+  const[from,to,label]=reportRange();const a=aggregateFiltered(from,to,rep.svc,rep.sku);
+  let rows=[['JAI CHAN SPA — '+label],[],['สินค้า','SKU','หน่วย','ปริมาณ','ต้นทุน(฿)']];
+  Object.keys(a.ubp).forEach(sku=>{const p=pBySku(sku);rows.push([shortName(p.name),sku,p.unit,a.ubp[sku],Math.round(a.cbp[sku])]);});
+  rows.push([],['รวม','','','',Math.round(a.total)]);
+  const csv='﻿'+rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  dl(csv,'report_'+from+'_'+to+'.csv','text/csv');
+}
+
+/* ============================================================================
+   PAGE: REORDER ALERT
+   ========================================================================== */
+let roFilter='all',roView='list';
+const supLabel=p=>p.supplierName?p.supplierName:'ไม่ระบุแหล่ง';
+function renderReorder(){
+  let rl=reorderList().sort((a,b)=>a.cover-b.cover);
+  const counts={out:rl.filter(r=>r.status==='out').length,reorder:rl.filter(r=>r.status==='reorder').length,low:rl.filter(r=>r.status==='low').length};
+  const anomalies=rl.filter(r=>r.anomaly);
+  if(roFilter==='need')rl=rl.filter(r=>r.status==='reorder'||r.status==='out');
+  else if(roFilter==='low')rl=rl.filter(r=>r.status==='low');
+  else if(roFilter==='anom')rl=anomalies;
+  $('#main').innerHTML=`
+  <div class="page-head"><div><h2>แจ้งเตือนสั่งซื้อ</h2><p>คำนวณจากสต็อกคงเหลือ เทียบอัตราการใช้เฉลี่ย (7 / 30 วัน + baseline)</p></div>
+    <button class="btn gold" onclick="exportReorderCSV()">⤓ ใบสั่งซื้อ (CSV)</button></div>
+  <div class="cards">
+    <div class="card"><div class="lab">หมดสต็อก</div><div class="val" style="color:var(--bad)">${counts.out}</div></div>
+    <div class="card"><div class="lab">ควรสั่งซื้อ</div><div class="val" style="color:var(--warn)">${counts.reorder}</div></div>
+    <div class="card"><div class="lab">ใกล้หมด</div><div class="val" style="color:var(--low)">${counts.low}</div></div>
+    <div class="card"><div class="lab">ใช้เร็วผิดปกติ</div><div class="val">${anomalies.length}</div><div class="sub">ควรตรวจสอบ</div></div>
+  </div>
+  <div class="panel"><div class="panel-b toolbar">
+    <div class="seg"><button class="${roFilter==='all'?'active':''}" onclick="roFilter='all';renderReorder()">ทั้งหมด</button>
+      <button class="${roFilter==='need'?'active':''}" onclick="roFilter='need';renderReorder()">ต้องสั่ง</button>
+      <button class="${roFilter==='low'?'active':''}" onclick="roFilter='low';renderReorder()">ใกล้หมด</button>
+      <button class="${roFilter==='anom'?'active':''}" onclick="roFilter='anom';renderReorder()">ผิดปกติ</button></div>
+    <div style="flex:1"></div>
+    <div class="seg"><button class="${roView==='list'?'active':''}" onclick="roView='list';renderReorder()">มุมมองรายการ</button>
+      <button class="${roView==='supplier'?'active':''}" onclick="roView='supplier';renderReorder()">จัดกลุ่มตามร้าน</button></div>
+  </div></div>
+  ${roView==='supplier'?renderReorderBySupplier(rl):`
+  <div class="panel"><div class="table-wrap"><table><thead><tr>
+    <th>สินค้า</th><th class="num">คงเหลือ</th><th class="num">ใช้/วัน (30d)</th><th class="num">พอใช้ (วัน)</th><th class="num">แนะนำสั่ง</th><th class="num">มูลค่าสั่ง</th><th>สั่งจาก</th><th>สถานะ</th>
+  </tr></thead><tbody>
+  ${rl.length?rl.map(r=>{const p=r.p;return `<tr>
+    <td><div>${esc(shortName(p.name))} ${r.anomaly?'<span class="badge b-warn" style="margin-left:4px">⚡ ผิดปกติ</span>':''}</div><span class="sku">${p.sku} · ${p.category}</span></td>
+    <td class="num"><b>${qf(p.stock)}</b> <span class="muted small">${p.unit}</span></td>
+    <td class="num">${qf(+r.daily.toFixed(2))}</td>
+    <td class="num">${r.cover===Infinity?'<span class="muted">—</span>':qf(Math.round(r.cover))}</td>
+    <td class="num"><b>${r.suggest>0?qf(r.suggest):'—'}</b></td>
+    <td class="num">${r.suggest>0?money(r.suggest*p.cost):'—'}</td>
+    <td class="small">${p.supplierName?esc(p.supplierName)+(p.orderUrl?` <a href="${esc(p.orderUrl)}" target="_blank" rel="noopener">↗</a>`:'')+(p.leadTimeDays!==''&&p.leadTimeDays!=null?`<br><span class="muted">lead ${p.leadTimeDays}d</span>`:''):'<span class="muted">—</span>'}</td>
+    <td>${statusBadge(r.status)}</td>
+  </tr>`;}).join(''):'<tr><td colspan="8" class="empty">ไม่มีรายการในกลุ่มนี้ ✓</td></tr>'}
+  </tbody></table></div></div>`}
+  <p class="muted small" style="padding:0 4px">หมายเหตุ: “ใช้เร็วผิดปกติ” = อัตราใช้ 7 วันล่าสุด &gt; 1.8× ของค่าเฉลี่ย 30 วัน — อาจเกิดจากการใช้เกินสูตร ของหาย หรือดีมานด์พุ่ง ควรตรวจนับจริง</p>`;
+}
+function renderReorderBySupplier(rl){
+  const need=rl.filter(r=>r.suggest>0);
+  if(!need.length)return '<div class="panel"><div class="empty">ไม่มีรายการที่ต้องสั่งในกลุ่มนี้ ✓</div></div>';
+  const groups={};
+  need.forEach(r=>{const k=supLabel(r.p);(groups[k]=groups[k]||[]).push(r);});
+  return Object.keys(groups).sort().map(k=>{
+    const items=groups[k];const tot=items.reduce((t,r)=>t+r.suggest*r.p.cost,0);
+    const any=items[0].p;
+    return `<div class="panel"><div class="panel-h"><h3>🏪 ${esc(k)}</h3>
+      <span class="hint">${items.length} รายการ · รวม ${money(tot)}${any.supplierName&&any.orderChannel?' · '+esc(any.orderChannel):''}${any.supplierName&&any.contact?' · '+esc(any.contact):''}${any.supplierName&&any.orderUrl?` · <a href="${esc(any.orderUrl)}" target="_blank" rel="noopener">เปิดลิงก์ ↗</a>`:''}</span></div>
+      <div class="table-wrap"><table><thead><tr><th>สินค้า</th><th class="num">คงเหลือ</th><th class="num">แนะนำสั่ง</th><th class="num">มูลค่า</th><th>สถานะ</th></tr></thead><tbody>
+      ${items.map(r=>`<tr><td>${esc(shortName(r.p.name))} <span class="sku">${r.p.sku}</span></td>
+        <td class="num">${qf(r.p.stock)} ${r.p.unit}</td><td class="num"><b>${qf(r.suggest)}</b></td>
+        <td class="num">${money(r.suggest*r.p.cost)}</td><td>${statusBadge(r.status)}</td></tr>`).join('')}
+      </tbody></table></div></div>`;
+  }).join('');
+}
+function exportReorderCSV(){
+  const rl=reorderList().filter(r=>r.suggest>0).sort((a,b)=>{const sa=supLabel(a.p),sb=supLabel(b.p);return sa<sb?-1:sa>sb?1:a.cover-b.cover;});
+  let rows=[['JAI CHAN SPA — ใบสั่งซื้อแนะนำ',todayISO()],[],
+    ['สินค้า','SKU','หมวด','คงเหลือ','หน่วย','แนะนำสั่ง','ต้นทุน/หน่วย','มูลค่ารวม','สถานะ','สั่งจาก','ช่องทาง','ลิงก์','ติดต่อ','Lead time(วัน)','Pack size']];
+  let tot=0;rl.forEach(r=>{const p=r.p;const v=r.suggest*p.cost;tot+=v;
+    rows.push([shortName(p.name),p.sku,p.category,p.stock,p.unit,r.suggest,p.cost,Math.round(v),STATUS_BADGE[r.status][1],
+      p.supplierName||'',p.orderChannel||'',p.orderUrl||'',p.contact||'',p.leadTimeDays===''||p.leadTimeDays==null?'':p.leadTimeDays,p.packSize||'']);});
+  rows.push([],['รวมมูลค่าสั่งซื้อโดยประมาณ','','','','','','',Math.round(tot)]);
+  const csv='﻿'+rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  dl(csv,'reorder_'+todayISO()+'.csv','text/csv');
+}
+
+/* ============================================================================
+   PAGE: STOCK COUNT  (physical cycle count — 2 rounds/month: before 10th & 20th)
+   counts[]: {id,periodKey,round,label,deadline,status,startedTs,closedTs,countedBy,lines:{sku:qty},result}
+   ========================================================================== */
+const usedInRecipe=sku=>db.services.some(s=>(s.recipe||[]).some(r=>r.type==='choice'?(r.options||[]).some(o=>o.sku===sku):r.sku===sku));
+const roundLabel=r=>r===1?'รอบ 1 (ก่อนวันที่ 10)':'รอบ 2 (ก่อนวันที่ 20)';
+function countDeadline(pk,round){return pk+'-'+(round===1?'10':'20');}
+function currentCountTarget(){
+  const t=todayISO(),d=+t.slice(8,10),pk=t.slice(0,7);
+  if(d<10)return{periodKey:pk,round:1};
+  if(d<20)return{periodKey:pk,round:2};
+  const dt=fromISO(pk+'-01');dt.setMonth(dt.getMonth()+1);return{periodKey:toISO(dt).slice(0,7),round:1};
+}
+function findCount(pk,round){return db.counts.find(c=>c.periodKey===pk&&c.round===round);}
+function roundStatus(pk,round){ // -> {state:'done'|'overdue'|'pending'|'upcoming', count, deadline, overdue}
+  const c=findCount(pk,round),deadline=countDeadline(pk,round),t=todayISO();
+  if(c&&c.status==='closed')return{state:'done',count:c,deadline,overdue:false};
+  const overdue=t>=deadline;
+  return{state:overdue?'overdue':(c&&c.status==='open'?'pending':'pending'),count:c||null,deadline,overdue};
+}
+function countDue(){const tg=currentCountTarget();const c=findCount(tg.periodKey,tg.round);
+  if(c&&c.status==='closed')return null;const overdue=todayISO()>=countDeadline(tg.periodKey,tg.round);return{...tg,overdue};}
+async function startCount(pk,round){
+  let c=findCount(pk,round);
+  if(c&&c.status==='closed'){toast('รอบนี้ปิดแล้ว','bad');return;}
+  if(!c){c={id:uid(),periodKey:pk,round,label:roundLabel(round),deadline:countDeadline(pk,round),
+    status:'open',startedTs:new Date().toISOString(),closedTs:null,countedBy:'',lines:{},result:null};
+    const row={id:c.id,period_key:pk,round,label:c.label,deadline:c.deadline,status:'open',counted_by:'',lines:{}};
+    if(!await guard(api.countInsert(row)))return;
+    db.counts.push(c);}
+  activeCountId=c.id;renderCount();
+}
+let activeCountId=null,countFilter='';
+function renderCount(){
+  const t=todayISO(),pk=t.slice(0,7),tg=currentCountTarget();
+  const monthName=fromISO(pk+'-01').toLocaleDateString('th-TH',{month:'long',year:'numeric'});
+  const active=activeCountId?db.counts.find(c=>c.id===activeCountId&&c.status==='open'):null;
+  const STATE_BADGE={done:['b-ok','✓ นับแล้ว'],overdue:['b-bad','⚠ เกินกำหนด'],pending:['b-low','⏳ ค้างนับ']};
+  const roundCard=(round)=>{const st=roundStatus(pk,round);const[bc,bt]=STATE_BADGE[st.state]||STATE_BADGE.pending;
+    const isTarget=tg.periodKey===pk&&tg.round===round;
+    return `<div class="card" style="${isTarget?'border-color:var(--gold);background:#fffdf9':''}">
+      <div class="lab">${roundLabel(round)}</div>
+      <div style="margin:8px 0"><span class="badge ${bc}">${bt}</span></div>
+      <div class="sub">ครบกำหนด ${thDate(st.deadline)}${st.count&&st.count.status==='closed'?' · นับเมื่อ '+thDate(st.count.closedTs.slice(0,10)):''}</div>
+      <div style="margin-top:10px">${st.state==='done'
+        ? `<button class="btn sm" onclick="viewCount('${st.count.id}')">ดูผล / ใบสั่งซื้อ</button>`
+        : `<button class="btn sm gold" onclick="startCount('${pk}',${round})">${st.count&&st.count.status==='open'?'นับต่อ':'เริ่มนับ'}</button>`}</div>
+    </div>`;};
+
+  let body=`
+  <div class="page-head"><div><h2>นับสต็อก (Stock Count)</h2><p>นับจริง 2 รอบ/เดือน — ก่อนวันที่ 10 และก่อนวันที่ 20 · รวมของใช้ที่ไม่ได้ตัดจากบริการ (น้ำยาทำความสะอาด ฯลฯ)</p></div></div>
+  <div class="panel"><div class="panel-h"><h3>รอบการนับ — ${monthName}</h3><span class="hint">รอบที่ต้องทำตอนนี้: ${roundLabel(tg.round)}${tg.periodKey!==pk?' (เดือนถัดไป)':''}</span></div>
+    <div class="panel-b"><div class="cards" style="margin:0">${roundCard(1)}${roundCard(2)}</div></div></div>`;
+
+  if(active){
+    const items=db.products.filter(p=>!countFilter||(p.name+p.sku+p.category).toLowerCase().includes(countFilter.toLowerCase()));
+    const counted=Object.keys(active.lines).length;
+    // group by category
+    const byCat={};items.forEach(p=>{(byCat[p.category]=byCat[p.category]||[]).push(p);});
+    body+=`
+    <div class="panel"><div class="panel-h"><h3>📋 ใบนับ — ${active.label}</h3>
+      <span class="hint">นับแล้ว <b id="cntProg">${counted}</b>/${db.products.length} รายการ</span></div>
+      <div class="panel-b toolbar">
+        <div class="field" style="min-width:200px"><label class="fl">ค้นหา</label><input id="cntQ" placeholder="ชื่อ / SKU / หมวด" value="${esc(countFilter)}"></div>
+        <div class="field" style="min-width:200px"><label class="fl">ผู้ตรวจนับ</label><input id="cntBy" placeholder="ชื่อพนักงาน" value="${esc(active.countedBy||'')}" oninput="setCountBy(this.value)"></div>
+        <div style="flex:1"></div>
+        <div class="field"><label class="fl">&nbsp;</label><button class="btn danger" onclick="cancelCount('${active.id}')">ยกเลิกรอบ</button></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>สินค้า</th><th>ที่มา</th><th class="num">ยอดระบบ</th><th style="width:120px">นับได้</th><th class="num">ส่วนต่าง</th></tr></thead><tbody>
+      ${Object.keys(byCat).map(cat=>`<tr style="background:var(--panel-2)"><td colspan="5"><b class="small">${cat}</b></td></tr>`+
+        byCat[cat].map(p=>{const has=active.lines[p.sku]!==undefined;const cv=has?active.lines[p.sku]:'';const diff=has?(active.lines[p.sku]-p.stock):null;
+        return `<tr><td>${esc(shortName(p.name))} <span class="sku">${p.sku}</span></td>
+          <td>${usedInRecipe(p.sku)?'<span class="tag">ตัดจากบริการ</span>':'<span class="tag" style="border-color:var(--gold);color:var(--gold-d)">นับเอง</span>'}</td>
+          <td class="num muted">${qf(p.stock)} ${p.unit}</td>
+          <td><input type="number" step="0.01" value="${cv}" placeholder="—" oninput="setCountLine('${active.id}','${p.sku}',this.value)" style="padding:6px;text-align:center"></td>
+          <td class="num" id="diff_${p.sku}" style="font-weight:600;color:${diff===null?'var(--muted)':diff<0?'var(--bad)':diff>0?'var(--ok)':'var(--muted)'}">${diff===null?'—':(diff>0?'+':'')+qf(diff)}</td></tr>`;}).join('')).join('')}
+      </tbody></table></div>
+      <div class="panel-b" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;border-top:1px solid var(--line)">
+        <span class="muted small">บันทึกอัตโนมัติระหว่างนับ · “ปิดรอบ” จะเขียนยอดนับเป็นสต็อกจริง สร้าง audit log และออกรายการสั่งซื้อ</span>
+        <button class="btn primary" onclick="closeCount('${active.id}')">ปิดรอบ &amp; อัปเดตสต็อก 🔒</button>
+      </div></div>`;
+  }
+
+  // history
+  const closed=db.counts.filter(c=>c.status==='closed').sort((a,b)=>(b.closedTs||'').localeCompare(a.closedTs||''));
+  body+=`<div class="panel"><div class="panel-h"><h3>🗂️ ประวัติการนับ</h3><span class="hint">${closed.length} รอบ</span></div>
+    <div class="table-wrap"><table><thead><tr><th>รอบ</th><th>วันที่ปิด</th><th>ผู้ตรวจนับ</th><th class="num">นับ</th><th class="num">ส่วนต่าง (มูลค่าสุทธิ)</th><th class="num">ของขาด</th><th class="num">ต้องสั่ง</th><th></th></tr></thead><tbody>
+    ${closed.length?closed.map(c=>{const r=c.result||{};return `<tr>
+      <td>${esc(c.label)}<br><span class="muted small">${c.periodKey}</span></td>
+      <td class="small">${c.closedTs?thDate(c.closedTs.slice(0,10)):'—'}</td>
+      <td class="small">${esc(c.countedBy||'—')}</td>
+      <td class="num">${r.countedItems||0}</td>
+      <td class="num" style="color:${(r.varianceValueNet||0)<0?'var(--bad)':'var(--ok)'}">${money(r.varianceValueNet||0)}</td>
+      <td class="num" style="color:var(--bad)">${money(r.shrinkValue||0)}</td>
+      <td class="num">${(r.order||[]).length}</td>
+      <td class="right"><button class="btn sm" onclick="viewCount('${c.id}')">ดู</button></td></tr>`;}).join(''):'<tr><td colspan="8" class="empty">ยังไม่มีประวัติการนับ</td></tr>'}
+    </tbody></table></div></div>`;
+
+  $('#main').innerHTML=body;
+  const q=$('#cntQ');if(q)q.addEventListener('input',e=>{countFilter=e.target.value;const v=e.target.value;renderCount();const nq=$('#cntQ');if(nq){nq.focus();nq.setSelectionRange(v.length,v.length);}});
+}
+let _countSaveT=null,_countByT=null;
+function setCountLine(id,sku,v){const c=db.counts.find(x=>x.id===id);if(!c)return;
+  if(v===''||v===null||isNaN(parseFloat(v)))delete c.lines[sku];else c.lines[sku]=+(parseFloat(v));
+  renderCountDiff(c,sku); // targeted DOM update keeps input focus
+  clearTimeout(_countSaveT);_countSaveT=setTimeout(()=>{api.countUpdate(id,{lines:c.lines}).catch(e=>toast(errMsg(e),'bad'));},600); // debounced persist
+}
+function renderCountDiff(c,sku){
+  const cell=$('#diff_'+sku),p=pBySku(sku);if(!cell||!p)return;
+  if(c.lines[sku]===undefined){cell.textContent='—';cell.style.color='var(--muted)';}
+  else{const diff=c.lines[sku]-p.stock;cell.textContent=(diff>0?'+':'')+qf(diff);
+    cell.style.color=diff<0?'var(--bad)':diff>0?'var(--ok)':'var(--muted)';}
+  const prog=$('#cntProg');if(prog)prog.textContent=Object.keys(c.lines).length;
+}
+function setCountBy(v){const c=db.counts.find(x=>x.id===activeCountId);if(!c)return;c.countedBy=v;
+  clearTimeout(_countByT);_countByT=setTimeout(()=>{api.countUpdate(c.id,{counted_by:v}).catch(()=>{});},600);}
+function cancelCount(id){requireManager(()=>{openModal('ยกเลิกรอบนับ',
+  `<p>ยกเลิกและลบใบนับรอบนี้? (ยอดที่กรอกจะหายไป สต็อกไม่ถูกแก้)</p>`,
+  `<button class="btn" onclick="closeModal()">ปิด</button><button class="btn danger" onclick="doCancelCount('${id}')">ยกเลิกรอบ</button>`);});}
+async function doCancelCount(id){
+  if(!await guard(api.countDelete(id),'ยกเลิกรอบแล้ว'))return;
+  db.counts=db.counts.filter(c=>c.id!==id);if(activeCountId===id)activeCountId=null;closeModal();refreshBadges();renderCount();}
+function closeCount(id){requireManager(()=>_closeCount(id));}
+function _closeCount(id){
+  const c=db.counts.find(x=>x.id===id);if(!c||c.status==='closed')return;
+  const lines=Object.keys(c.lines);
+  if(!lines.length){toast('ยังไม่ได้นับสินค้าใด','bad');return;}
+  // compute variances
+  let net=0,shrink=0,nVar=0;const vrows=[];
+  lines.forEach(sku=>{const p=pBySku(sku);if(!p)return;const diff=c.lines[sku]-p.stock;if(diff!==0){nVar++;const val=diff*p.cost;net+=val;if(diff<0)shrink+=Math.abs(val);
+    vrows.push({sku,name:p.name,from:p.stock,to:c.lines[sku],diff,val});}});
+  openModal('ยืนยันปิดรอบนับ — '+esc(c.label),
+    `<div class="cards" style="margin:0 0 12px">
+       <div class="card"><div class="lab">นับ</div><div class="val">${lines.length}<small> รายการ</small></div></div>
+       <div class="card"><div class="lab">มีส่วนต่าง</div><div class="val">${nVar}</div></div>
+       <div class="card"><div class="lab">มูลค่าสุทธิ</div><div class="val" style="color:${net<0?'var(--bad)':'var(--ok)'};font-size:20px">${money(net)}</div></div>
+       <div class="card"><div class="lab">ของขาด (shrinkage)</div><div class="val" style="color:var(--bad);font-size:20px">${money(shrink)}</div></div>
+     </div>
+     ${vrows.length?`<div class="table-wrap" style="max-height:240px;overflow:auto"><table><thead><tr><th>สินค้า</th><th class="num">ระบบ</th><th class="num">นับได้</th><th class="num">ส่วนต่าง</th></tr></thead><tbody>
+       ${vrows.sort((a,b)=>a.val-b.val).map(v=>`<tr><td>${esc(shortName(v.name))} <span class="sku">${v.sku}</span></td><td class="num">${qf(v.from)}</td><td class="num">${qf(v.to)}</td>
+         <td class="num" style="color:${v.diff<0?'var(--bad)':'var(--ok)'};font-weight:600">${v.diff>0?'+':''}${qf(v.diff)}</td></tr>`).join('')}</tbody></table></div>`
+       :'<p class="muted small">ไม่มีส่วนต่าง — ยอดนับตรงกับระบบทั้งหมด</p>'}
+     <p class="muted small" style="margin-top:10px">กดยืนยันเพื่อเขียนยอดนับเป็นสต็อกจริง · บันทึก audit log ทุกตัวที่ต่าง · และสร้างรายการสั่งซื้อ</p>`,
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="commitCount('${id}')">ยืนยันปิดรอบ</button>`);
+}
+async function commitCount(id){
+  const c=db.counts.find(x=>x.id===id);if(!c)return;
+  // compute variance + apply to a local mirror to build the order snapshot
+  let net=0,shrink=0;const applied=[];
+  Object.keys(c.lines).forEach(sku=>{const p=pBySku(sku);if(!p)return;const to=c.lines[sku];
+    if(to!==p.stock){const diff=to-p.stock;net+=diff*p.cost;if(diff<0)shrink+=Math.abs(diff*p.cost);
+      applied.push({sku,from:p.stock,to});p.stock=to;}});
+  const order=reorderList().filter(r=>r.suggest>0).map(r=>({sku:r.p.sku,name:r.p.name,suggest:r.suggest,
+    cost:r.p.cost,supplierName:r.p.supplierName||'',status:r.status}));
+  const result={countedItems:Object.keys(c.lines).length,varianceValueNet:Math.round(net),shrinkValue:Math.round(shrink),order};
+  // persist latest lines, then close server-side (applies stock + writes audit authoritatively)
+  if(!await guard(api.countUpdate(id,{lines:c.lines}))){applied.forEach(a=>{pBySku(a.sku).stock=a.from;});return;}
+  if(!await guard(api.closeCount(id,result),'ปิดรอบนับแล้ว — อัปเดตสต็อก & ออกรายการสั่งซื้อ')){
+    applied.forEach(a=>{pBySku(a.sku).stock=a.from;});return;}
+  applied.forEach(a=>pushAdj(a.sku,a.from,a.to,'นับสต็อก '+c.label)); // mirror audit rows locally
+  c.result=result;c.status='closed';c.closedTs=new Date().toISOString();
+  if(activeCountId===id)activeCountId=null;
+  closeModal();refreshBadges();viewCount(id);
+}
+function viewCount(id){
+  const c=db.counts.find(x=>x.id===id);if(!c){renderCount();return;}
+  const r=c.result||{order:[]};const order=r.order||[];
+  const tot=order.reduce((t,o)=>t+o.suggest*o.cost,0);
+  $('#main').innerHTML=`
+  <div class="page-head"><div><h2>ผลการนับ — ${esc(c.label)}</h2><p>${c.periodKey} · ปิดเมื่อ ${c.closedTs?thDate(c.closedTs.slice(0,10)):'—'} · ผู้ตรวจนับ ${esc(c.countedBy||'—')}</p></div>
+    <button class="btn" onclick="renderCount()">← กลับ</button></div>
+  <div class="cards">
+    <div class="card"><div class="lab">นับทั้งหมด</div><div class="val">${r.countedItems||0}<small> รายการ</small></div></div>
+    <div class="card"><div class="lab">มูลค่าส่วนต่างสุทธิ</div><div class="val" style="color:${(r.varianceValueNet||0)<0?'var(--bad)':'var(--ok)'}">${money(r.varianceValueNet||0)}</div></div>
+    <div class="card"><div class="lab">ของขาด (shrinkage)</div><div class="val" style="color:var(--bad)">${money(r.shrinkValue||0)}</div></div>
+    <div class="card accent"><div class="lab">ต้องสั่งซื้อ</div><div class="val">${order.length}<small> รายการ</small></div><div class="sub">≈ ${money(tot)}</div></div>
+  </div>
+  <div class="panel"><div class="panel-h"><h3>📦 รายการที่ต้องสั่งซื้อ (จากรอบนับนี้)</h3>
+    <button class="btn sm gold" onclick="exportCountOrder('${id}')">⤓ ใบสั่งซื้อ (CSV)</button></div>
+    <div class="table-wrap"><table><thead><tr><th>สินค้า</th><th class="num">แนะนำสั่ง</th><th class="num">มูลค่า</th><th>สั่งจาก</th><th>สถานะ</th></tr></thead><tbody>
+    ${order.length?order.map(o=>`<tr><td>${esc(shortName(o.name))} <span class="sku">${o.sku}</span></td>
+      <td class="num"><b>${qf(o.suggest)}</b></td><td class="num">${money(o.suggest*o.cost)}</td>
+      <td class="small">${o.supplierName?esc(o.supplierName):'<span class="muted">—</span>'}</td><td>${statusBadge(o.status)}</td></tr>`).join(''):'<tr><td colspan="5" class="empty">ไม่มีรายการต้องสั่ง ณ เวลาที่ปิดรอบ ✓</td></tr>'}
+    </tbody></table></div></div>
+  <p class="muted small" style="padding:0 4px">หมายเหตุ: รายการสั่งซื้อนี้คำนวณจากสต็อกหลังปิดรอบ (snapshot) — สำหรับยอดล่าสุดเรียลไทม์ ดูที่หน้า “แจ้งเตือนสั่งซื้อ”</p>`;
+}
+function exportCountOrder(id){
+  const c=db.counts.find(x=>x.id===id);if(!c||!c.result)return;const order=c.result.order||[];
+  let rows=[['JAI CHAN SPA — ใบสั่งซื้อจากรอบนับ',c.label,c.periodKey],[],['สินค้า','SKU','แนะนำสั่ง','ต้นทุน/หน่วย','มูลค่า','สั่งจาก','สถานะ']];
+  let tot=0;order.forEach(o=>{const p=pBySku(o.sku);const v=o.suggest*o.cost;tot+=v;
+    rows.push([shortName(o.name),o.sku,o.suggest,o.cost,Math.round(v),o.supplierName||(p?p.supplierName:'')||'',STATUS_BADGE[o.status]?STATUS_BADGE[o.status][1]:'']);});
+  rows.push([],['รวมโดยประมาณ','','','',Math.round(tot)]);
+  const csv='﻿'+rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  dl(csv,'count_order_'+c.periodKey+'_R'+c.round+'.csv','text/csv');
+}
+
+/* ============================================================================
+   PAGE: SETTINGS / IMPORT-EXPORT
+   ========================================================================== */
+function renderSettings(){
+  const mgr=isManager();
+  $('#main').innerHTML=`
+  <div class="page-head"><div><h2>ตั้งค่า &amp; ข้อมูล</h2><p>ข้อมูลเก็บปลอดภัยบนคลาวด์ (Supabase) · สิทธิ์ผู้ใช้บังคับที่ฝั่งเซิร์ฟเวอร์</p></div></div>
+  <div class="grid-2">
+    <div class="panel"><div class="panel-h"><h3>บัญชีผู้ใช้</h3></div><div class="panel-b">
+      <div class="kv"><span>อีเมล</span><b>${esc(currentUser?currentUser.email:'—')}</b></div>
+      <div class="kv"><span>สิทธิ์</span><b>${mgr?'ผู้จัดการ (Manager)':'พนักงาน (Staff)'}</b></div>
+      <div style="margin-top:12px"><button class="btn" onclick="doLogout()">ออกจากระบบ</button></div>
+      <p class="muted small" style="margin-top:10px">เพิ่ม/ลบผู้ใช้ หรือเปลี่ยนสิทธิ์ ทำที่ Supabase → Authentication (ดูคู่มือ README)</p>
+    </div></div>
+    <div class="panel"><div class="panel-h"><h3>ข้อมูลระบบ</h3></div><div class="panel-b">
+      <div class="kv"><span>สินค้าทั้งหมด</span><b>${db.products.length}</b></div>
+      <div class="kv"><span>บริการ (สูตร)</span><b>${db.services.length}</b></div>
+      <div class="kv"><span>ประวัติบันทึกบริการ</span><b>${db.logs.length} แถว</b></div>
+      <div class="kv"><span>ประวัติการปรับสต็อก</span><b>${db.adjustments.length} รายการ</b></div>
+      <div class="kv"><span>มูลค่าสต็อกปัจจุบัน</span><b>${money(stockValue())}</b></div>
+    </div></div>
+  </div>
+
+  <div class="panel"><div class="panel-h"><h3>สำรอง &amp; นำเข้าข้อมูล</h3></div><div class="panel-b">
+    <p class="muted small">Export = ดาวน์โหลด JSON สำรองทั้งหมด · นำเข้าครั้งแรก = ย้ายข้อมูลจากไฟล์เดิม (LocalStorage export) ขึ้นคลาวด์ ${mgr?'':'<b>(ต้องเป็นผู้จัดการ)</b>'}</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      <button class="btn primary" onclick="exportData()">⤓ Export JSON</button>
+      <button class="btn gold" onclick="requireManager(()=>$('#importFile').click())">⤒ นำเข้าข้อมูลขึ้นคลาวด์ครั้งแรก</button>
+      <input type="file" id="importFile" accept="application/json,.json" style="display:none" onchange="importData(this)">
+    </div>
+  </div></div>
+
+  <div class="panel"><div class="panel-h"><h3>🔒 ความปลอดภัย</h3></div><div class="panel-b">
+    <p class="muted small" style="background:var(--ok-bg);border:1px solid #cfe6d8;border-radius:9px;padding:10px 12px">
+      <b>ปลอดภัยจริง:</b> ระบบใช้ Supabase Auth (เข้าระบบด้วยอีเมล/รหัสผ่าน) และ Row Level Security —
+      งานที่กระทบสต็อก (แก้สินค้า/สูตร, ปรับสต็อก, ยกเลิกบันทึก, ปิดรอบนับ, นำเข้าข้อมูล) ถูกบังคับสิทธิ์
+      <b>ที่ฐานข้อมูลโดยตรง</b> พนักงานทั่วไปทำไม่ได้แม้แก้โค้ดฝั่งหน้าเว็บ · ทุกการปรับสต็อกบันทึกผู้กระทำไว้ใน audit log</p>
+  </div></div>`;
+}
+function dl(content,name,type){const b=new Blob([content],{type});const u=URL.createObjectURL(b);
+  const a=document.createElement('a');a.href=u;a.download=name;a.click();URL.revokeObjectURL(u);}
+function exportData(){dl(JSON.stringify(db,null,2),'jaichan_stock_'+todayISO()+'.json','application/json');toast('ส่งออกข้อมูลแล้ว','ok');}
+/* one-time import of an old LocalStorage export INTO Supabase (manager only) */
+function importData(input){const f=input.files[0];if(!f)return;const rd=new FileReader();
+  rd.onload=async()=>{try{const o=JSON.parse(rd.result);
+    if(!o.products||!o.services)throw new Error('โครงสร้างไฟล์ไม่ถูกต้อง');
+    const payload={products:o.products||[],services:o.services||[],logs:o.logs||[],adjustments:o.adjustments||[],counts:o.counts||[]};
+    if(!await guard(api.importAll(payload),'นำเข้าขึ้นคลาวด์สำเร็จ'))return;
+    await loadAll();refreshBadges();go(current);
+  }catch(e){toast('นำเข้าไม่สำเร็จ: '+errMsg(e),'bad');}};
+  rd.readAsText(f);input.value='';}
+
+/* ============================================================================
+   BOOT  — connect Supabase, restore session or show login
+   ========================================================================== */
+async function boot(){
+  if(!initSupabase()){
+    $('#authHint').innerHTML='⚠ ยังไม่ได้ตั้งค่า config.js (Supabase URL/Key) — ดูไฟล์ README';
+    $('#authForm').style.opacity=.4;$('#authForm').style.pointerEvents='none';return;
+  }
+  $('#authForm').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();doLogin();}});
+  sb.auth.onAuthStateChange((_e,session)=>{
+    if(session&&session.user){currentUser=session.user;enterApp();}
+    else{currentUser=null;$('#authBg').style.display='flex';}
+  });
+  const{data}=await sb.auth.getSession();
+  if(data&&data.session){currentUser=data.session.user;enterApp();}
+  else{$('#authHint').textContent='เข้าระบบด้วยบัญชีพนักงาน';}
+}
+boot();
+</script>
+</body>
+</html>
