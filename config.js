@@ -7,6 +7,6 @@
 // "service_role" / secret key here.
 // ============================================================================
 window.JAICHAN_CONFIG = {
-  SUPABASE_URL: "https://YOUR-PROJECT-ref.supabase.co",
-  SUPABASE_ANON_KEY: "YOUR-ANON-PUBLIC-KEY"
+  SUPABASE_URL: "https://jilgqxklpuymabvaotpo.supabase.co",
+  SUPABASE_ANON_KEY: "sb_publishable_9-lW0larEhQj1DjNVkx8qQ_1JyhvXqB"
 };
