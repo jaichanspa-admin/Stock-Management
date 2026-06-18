@@ -4,18 +4,26 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>JAI CHAN SPA — Stock Management</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- Supabase JS pinned to an exact version for reproducible behaviour.
+     Bumping it can change auth/RLS behaviour — test on a staging project first,
+     then update this version (latest 2.x as of writing: 2.108.2). -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.108.2"></script>
 <script src="config.js"></script>
 <!--
   ============================================================================
-  JAI CHAN SPA — STOCK MANAGEMENT (Single-file HTML app)
+  JAI CHAN SPA — STOCK MANAGEMENT (Single-file HTML front-end)
   ----------------------------------------------------------------------------
-  • No backend / no external DB. Data persists in browser LocalStorage.
-  • Seed data extracted from the two real Excel files (products, costs,
-    service→product recipes, monthly usage, real service volumes Jan–Jun 2026).
+  • Cloud backend: Supabase (Postgres + Auth + RLS/RPC). This file is the static
+    front-end only; ALL stock-affecting writes are enforced server-side by role
+    and branch. No data lives in LocalStorage anymore.
+  • Multi-branch: each staff user has a home branch; managers see every branch
+    plus a consolidated "all branches" overview.
   • Sections: Dashboard / Daily Entry / Stock Items / Recipes / Reports /
-    Reorder Alert / Settings(Import-Export).
-  • To extend: edit the SEED constant (data) or the render*() functions (UI).
+    Stock Count / Reorder Alert / Settings(Import-Export/Branches).
+  • To extend: edit the render*() functions (UI) or the RPCs in supabase/schema.sql.
+  • NOTE: the SEED / buildDemo / migrate / LS_KEY block below is LEGACY from the
+    old LocalStorage version and is NOT executed in the cloud path — kept only as
+    a data/recipe reference. The app boots from Supabase via boot() at the bottom.
   ============================================================================
 -->
 <style>
@@ -255,12 +263,28 @@ const SEED = {"products":[{"sku":"SC01","name":"สครับกาแฟผ�
    ========================================================================== */
 const $=(s,r=document)=>r.querySelector(s);
 const $$=(s,r=document)=>[...r.querySelectorAll(s)];
-const LS_KEY='jaichan_stock_v1';
-const uid=()=>Math.random().toString(36).slice(2,9);
+const LS_KEY='jaichan_stock_v1';   // LEGACY: LocalStorage key, unused in the cloud path
+// Collision-resistant id. Prefer crypto.randomUUID(); fall back to a
+// time + double-random id (far safer than the old 7-char Math.random slice,
+// which could collide across branches and silently drop rows on import).
+const uid=()=>{
+  if(window.crypto&&typeof crypto.randomUUID==='function')return crypto.randomUUID();
+  return 'id-'+Date.now().toString(36)+'-'
+    +Math.random().toString(36).slice(2,10)+Math.random().toString(36).slice(2,10);
+};
 const money=n=>'฿'+(Math.round(n||0)).toLocaleString('en-US');
 const money2=n=>'฿'+(n||0).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:1});
 const qf=n=>{n=n||0;return Number.isInteger(n)?n.toLocaleString('en-US'):n.toLocaleString('en-US',{maximumFractionDigits:1});};
-const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// Safe to embed inside a single-quoted JS string that itself sits in a
+// double-quoted HTML attribute, e.g. onclick="fn('${jsStr(sku)}')".
+// Backslash-escapes JS metachars, then HTML-escapes attribute breakers.
+const jsStr=s=>String(s==null?'':s)
+  .replace(/\\/g,'\\\\').replace(/'/g,"\\'")
+  .replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+// Allow only http/https/mailto/tel URLs; return '' for javascript:, data:, or malformed.
+const safeUrl=s=>{if(!s)return '';try{const u=new URL(String(s).trim());
+  if(!['http:','https:','mailto:','tel:'].includes(u.protocol))return '';}catch{return '';}return String(s).trim();};
 function pad(n){return n<10?'0'+n:''+n;}
 function toISO(d){return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());}
 function fromISO(s){const[y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d);}
@@ -279,6 +303,9 @@ function hashCode(s){let h=0;for(let i=0;i<s.length;i++){h=(h<<5)-h+s.charCodeAt
    ========================================================================== */
 let db=null;
 
+/* LEGACY (LocalStorage era) — buildDemo() is NOT called in the Supabase path.
+   Retained only because SEED documents the real recipes/costs. Safe to delete
+   together with SEED if you no longer need that reference data. */
 function buildDemo(){
   // --- products with seeded stock levels (deterministic variety for demo) ---
   const products=SEED.products.map(p=>{
@@ -347,7 +374,7 @@ const mapProduct=r=>({sku:r.sku,branchId:r.branch_id,name:r.name,category:r.cate
   reorderQty:+r.reorder_qty,monthlyUsage:+r.monthly_usage,supplierName:r.supplier_name||'',
   orderChannel:r.order_channel||'',orderUrl:r.order_url||'',contact:r.contact||'',
   leadTimeDays:r.lead_time_days==null?'':r.lead_time_days,packSize:r.pack_size||'',supplierNotes:r.supplier_notes||''});
-const mapLog=r=>({id:r.id,date:r.date,service:r.service,serviceId:r.service_id,count:r.count,usage:r.usage||[],choices:r.choices||{}});
+const mapLog=r=>({id:r.id,branchId:r.branch_id,date:r.date,service:r.service,serviceId:r.service_id,count:r.count,usage:r.usage||[],choices:r.choices||{}});
 const mapAdj=r=>({id:r.id,ts:r.ts,sku:r.sku,productName:r.product_name,from:+r.from_qty,to:+r.to_qty,delta:+r.delta,reason:r.reason,actor:r.actor});
 const mapCount=r=>({id:r.id,periodKey:r.period_key,round:r.round,label:r.label,deadline:r.deadline,status:r.status,
   startedTs:r.started_ts,closedTs:r.closed_ts,countedBy:r.counted_by||'',lines:r.lines||{},result:r.result||null});
@@ -403,7 +430,13 @@ const api={
   cloneCatalog:(from,to)=>rpc('clone_catalog',{p_from:from,p_to:to}),
   saveBranch:(id,name,sort)=>rpc('save_branch',{p_id:id,p_name:name,p_sort:sort}),
   countInsert:async row=>{const{error}=await sb.from('counts').insert(row);if(error)throw error;},
-  countUpdate:async(id,patch)=>{const{error}=await sb.from('counts').update(patch).eq('id',id);if(error)throw error;},
+  countUpdate:async(id,patch)=>{
+    const found=db.counts.find(x=>x.id===id)||{lines:{},countedBy:''};
+    const{error}=await sb.rpc('update_count_draft',{
+      p_id:id,
+      p_lines:patch.lines!==undefined?patch.lines:(found.lines||{}),
+      p_counted_by:patch.counted_by!==undefined?patch.counted_by:(found.countedBy||'')
+    });if(error)throw error;},
   countDelete:async id=>{const{error}=await sb.from('counts').delete().eq('id',id);if(error)throw error;}
 };
 async function guard(promise,okMsg){try{await promise;if(okMsg)toast(okMsg,'ok');return true;}
@@ -432,10 +465,13 @@ const OP_ITEMS=[
   {sku:'CS03',name:'สบู่ล้างมือรีฟิล (Hand Soap Refill)',category:'Consumable',unit:'แกลลอน',cost:140,monthlyUsage:2},
   {sku:'CS04',name:'น้ำดื่มบริการลูกค้า (Drinking Water pack)',category:'Consumable',unit:'แพ็ค',cost:50,monthlyUsage:20}
 ];
+/* LEGACY (LocalStorage era) — migrate() is NOT called in the Supabase path.
+   The cloud DB is migrated via supabase/schema.sql + migration_branches.sql.
+   The db.settings.pin below was the OLD client-side PIN, now fully removed. */
 function migrate(){
   db.meta=db.meta||{seededAt:new Date().toISOString()};
   db.settings=db.settings||{};
-  if(!db.settings.pin)db.settings.pin='2468';                 // default PIN (client-side guard)
+  if(!db.settings.pin)db.settings.pin='2468';                 // LEGACY default PIN — not used anymore
   db.adjustments=db.adjustments||[];                          // stock audit log
   db.counts=db.counts||[];                                    // physical stock-count rounds
   // seed operational consumables once (also into existing saved data)
@@ -641,7 +677,7 @@ function renderPickBranch(tab){
     <div style="font-size:15px;color:var(--ink);font-weight:600;margin-bottom:6px">เลือกสาขาก่อนทำรายการนี้</div>
     <p class="muted small" style="max-width:420px;margin:0 auto 16px">“ภาพรวมทุกสาขา” ใช้ดูสรุปและออกใบสั่งซื้อรวมเท่านั้น — การบันทึก/แก้สต็อก/นับของ ต้องเลือกสาขาที่หน้างาน</p>
     <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
-      ${branches.map(b=>`<button class="btn gold" onclick="pickBranchThen('${b.id}','${tab}')">${esc(b.name)}</button>`).join('')}
+      ${branches.map(b=>`<button class="btn gold" onclick="pickBranchThen('${jsStr(b.id)}','${jsStr(tab)}')">${esc(b.name)}</button>`).join('')}
     </div></div></div>`;
 }
 async function pickBranchThen(id,tab){current=tab;await switchBranch(id);}
@@ -690,8 +726,8 @@ function renderDashboard(){
   <div class="grid-2">
     <div class="panel"><div class="panel-h"><h3>⚑ ใกล้หมด / ควรสั่งซื้อ</h3><a class="hint" href="#" onclick="go('reorder');return false">ดูทั้งหมด →</a></div>
       <div class="table-wrap"><table><thead><tr><th>สินค้า</th><th class="num">คงเหลือ</th><th class="num">พอใช้ (วัน)</th><th>สถานะ</th></tr></thead><tbody>
-      ${low.length?low.slice(0,8).map(r=>`<tr><td><div>${esc(shortName(r.p.name))}</div><span class="sku">${r.p.sku}</span></td>
-        <td class="num">${qf(r.p.stock)} <span class="muted small">${r.p.unit}</span></td>
+      ${low.length?low.slice(0,8).map(r=>`<tr><td><div>${esc(shortName(r.p.name))}</div><span class="sku">${esc(r.p.sku)}</span></td>
+        <td class="num">${qf(r.p.stock)} <span class="muted small">${esc(r.p.unit)}</span></td>
         <td class="num">${r.cover===Infinity?'—':qf(Math.round(r.cover))}</td><td>${statusBadge(r.status)}</td></tr>`).join(''):`<tr><td colspan="4" class="empty">สต็อกเพียงพอทั้งหมด ✓</td></tr>`}
       </tbody></table></div></div>
 
@@ -703,8 +739,8 @@ function renderDashboard(){
 
   <div class="panel"><div class="panel-h"><h3>📦 สินค้าที่ถูกใช้มากที่สุด (เดือนนี้ · ตามมูลค่า)</h3></div>
     <div class="table-wrap"><table><thead><tr><th>สินค้า</th><th>หมวด</th><th class="num">ปริมาณใช้</th><th class="num">ต้นทุนที่ใช้</th><th style="width:30%">สัดส่วน</th></tr></thead><tbody>
-    ${topProd.length?topProd.map(x=>`<tr><td>${esc(shortName(x.p.name))} <span class="sku">${x.p.sku}</span></td><td class="muted small">${x.p.category}</td>
-      <td class="num">${qf(x.qty)} ${x.p.unit}</td><td class="num"><b>${money(x.cost)}</b></td>
+    ${topProd.length?topProd.map(x=>`<tr><td>${esc(shortName(x.p.name))} <span class="sku">${esc(x.p.sku)}</span></td><td class="muted small">${esc(x.p.category)}</td>
+      <td class="num">${qf(x.qty)} ${esc(x.p.unit)}</td><td class="num"><b>${money(x.cost)}</b></td>
       <td><div class="bar"><i style="width:${x.cost/maxPrd*100}%"></i></div></td></tr>`).join(''):`<tr><td colspan="5" class="empty">ยังไม่มีข้อมูล</td></tr>`}
     </tbody></table></div></div>`;
 }
@@ -754,7 +790,7 @@ function renderDashboardAll(){
       <td class="num" style="color:${x.reorder?'var(--warn)':'var(--muted)'};font-weight:${x.reorder?'600':'400'}">${x.reorder||'—'}</td>
       <td class="num muted">${x.low||'—'}</td>
       <td class="num">${x.today||'—'}</td>
-      <td class="right">${x.items?`<button class="btn sm" onclick="switchBranch('${x.b.id}')">เข้าสาขา →</button>`:`<button class="btn sm gold" onclick="switchBranch('${x.b.id}')">ตั้งค่า →</button>`}</td>
+      <td class="right">${x.items?`<button class="btn sm" onclick="switchBranch('${jsStr(x.b.id)}')">เข้าสาขา →</button>`:`<button class="btn sm gold" onclick="switchBranch('${jsStr(x.b.id)}')">ตั้งค่า →</button>`}</td>
     </tr>`).join('')}
     </tbody></table></div></div>
   ${rows.some(x=>!x.items)?`<p class="muted small" style="padding:0 4px">⚠ สาขาที่ยังไม่มีรายการสินค้า — เข้าสาขานั้นแล้วไปที่ <b>ตั้งค่า → คัดลอกแคตตาล็อก</b> เพื่อเริ่มต้น</p>`:''}`;
@@ -787,7 +823,7 @@ function renderReorderAll(){
   ${nItems?keys.map(k=>{const items=groups[k].sort((a,b)=>b.value-a.value);const tot=items.reduce((t,e)=>t+e.value,0);
     return `<div class="panel"><div class="panel-h"><h3>🏪 ${esc(k)}</h3><span class="hint">${items.length} รายการ · รวม ${money(tot)}</span></div>
     <div class="table-wrap"><table><thead><tr><th>สินค้า</th>${bcols.map(b=>`<th class="num">${esc(b.name)}</th>`).join('')}<th class="num">รวม</th><th class="num">มูลค่า</th><th>สถานะ</th></tr></thead><tbody>
-    ${items.map(e=>`<tr><td>${esc(shortName(e.name))} <span class="sku">${e.sku}</span></td>
+    ${items.map(e=>`<tr><td>${esc(shortName(e.name))} <span class="sku">${esc(e.sku)}</span></td>
       ${bcols.map(b=>`<td class="num ${e.per[b.id]?'':'muted'}">${e.per[b.id]?'<b>'+qf(e.per[b.id])+'</b>':'—'}</td>`).join('')}
       <td class="num"><b>${qf(e.total)}</b></td><td class="num">${money(e.value)}</td><td>${statusBadge(e.worst)}</td></tr>`).join('')}
     </tbody></table></div></div>`;}).join('')
@@ -827,7 +863,7 @@ function renderDaily(){
   ${existing.length?`<div class="panel"><div class="panel-h"><h3>บันทึกแล้วของวันนี้</h3><span class="hint">${existing.reduce((t,l)=>t+l.count,0)} บริการ — สต็อกถูกหักแล้ว</span></div>
     <div class="table-wrap"><table><thead><tr><th>บริการ</th><th class="num">จำนวน</th><th>กลิ่นที่เลือก</th><th class="num">ต้นทุนวัตถุดิบ</th><th></th></tr></thead><tbody>
     ${existing.map(l=>{const c=(logUsage(l)).reduce((t,u)=>t+u.cost,0);const ch=l.choices?choiceSummary(l.choices):'';return `<tr><td>${esc(l.service)}</td><td class="num">${l.count}</td><td class="small muted">${ch||'—'}</td><td class="num">${money(c)}</td>
-      <td class="right"><button class="btn sm danger" onclick="voidLog('${l.id}')">ยกเลิก (คืนสต็อก)</button></td></tr>`;}).join('')}
+      <td class="right"><button class="btn sm danger" onclick="voidLog('${jsStr(l.id)}')">ยกเลิก (คืนสต็อก)</button></td></tr>`;}).join('')}
     </tbody></table></div></div>`:''}
 
   <div class="panel"><div class="panel-h"><h3>เลือกบริการ &amp; จำนวน</h3><span class="hint">${db.services.length} บริการ</span></div>
@@ -836,9 +872,9 @@ function renderDaily(){
       <div class="svc-card ${v>0?'has':''}" id="sc_${s.id}">
         <div class="nm">${esc(s.name)}</div>
         <div class="mc">วัตถุดิบ ${money(mc)}/ครั้ง · ${recipeItemCount(s)} รายการ${choices.length?' · <b style="color:var(--gold-d)">เลือกกลิ่นได้</b>':''}</div>
-        <div class="qty-row"><button onclick="bump('${s.id}',-1)">−</button>
-          <input type="number" min="0" id="q_${s.id}" value="${v||''}" placeholder="0" oninput="setCount('${s.id}',this.value)">
-          <button onclick="bump('${s.id}',1)">＋</button></div>
+        <div class="qty-row"><button onclick="bump('${jsStr(s.id)}',-1)">−</button>
+          <input type="number" min="0" id="q_${esc(s.id)}" value="${v||''}" placeholder="0" oninput="setCount('${jsStr(s.id)}',this.value)">
+          <button onclick="bump('${jsStr(s.id)}',1)">＋</button></div>
         ${choices.map(g=>renderChoiceGroup(s,g)).join('')}
       </div>`;}).join('')}
     </div></div></div>
@@ -858,8 +894,8 @@ function renderDaily(){
 function renderChoiceGroup(s,g){
   const ch=(dailyDraft.choices[s.id]&&dailyDraft.choices[s.id][g.groupId])||{};
   return `<div class="choice-grp"><div class="cg-h"><span>${esc(g.label)}</span><span class="cg-rem" id="rem_${s.id}_${g.groupId}"></span></div>
-    ${(g.options||[]).map(o=>`<div class="cg-row"><span>${esc(o.label)} <span class="sku">${o.sku}</span></span>
-      <input type="number" min="0" value="${ch[o.sku]||''}" placeholder="0" oninput="setChoice('${s.id}','${g.groupId}','${o.sku}',this.value)"></div>`).join('')}
+    ${(g.options||[]).map(o=>`<div class="cg-row"><span>${esc(o.label)} <span class="sku">${esc(o.sku)}</span></span>
+      <input type="number" min="0" value="${ch[o.sku]||''}" placeholder="0" oninput="setChoice('${jsStr(s.id)}','${jsStr(g.groupId)}','${jsStr(o.sku)}',this.value)"></div>`).join('')}
   </div>`;
 }
 function choiceSummary(choices){
@@ -918,8 +954,8 @@ function updateDailyPreview(){
   if(!keys.length){pv.style.display='none';return;}
   pv.style.display='';
   body.innerHTML=keys.map(sku=>{const p=pBySku(sku);const used=ubp[sku];const after=p.stock-used;const short=after<0;
-    return `<tr><td>${esc(shortName(p.name))} <span class="sku">${sku}</span></td>
-    <td class="num">${qf(used)} ${p.unit}</td><td class="num" style="${short?'color:var(--bad);font-weight:600':''}">${qf(after)}</td>
+    return `<tr><td>${esc(shortName(p.name))} <span class="sku">${esc(sku)}</span></td>
+    <td class="num">${qf(used)} ${esc(p.unit)}</td><td class="num" style="${short?'color:var(--bad);font-weight:600':''}">${qf(after)}</td>
     <td class="num">${money(used*p.cost)}</td><td>${short?'<span class="badge b-bad">ไม่พอ</span>':'<span class="badge b-ok">พอ</span>'}</td></tr>`;}).join('');
 }
 function saveDaily(){
@@ -947,7 +983,7 @@ function saveDaily(){
     openModal('⚠ สต็อกไม่พอ',
       `<p class="muted">มีสินค้าบางรายการไม่พอสำหรับบริการที่บันทึก — ยืนยันบันทึกต่อไป (สต็อกจะติดลบ) หรือยกเลิกเพื่อแก้ไข?</p>
        <table><thead><tr><th>สินค้า</th><th class="num">ต้องใช้</th><th class="num">คงเหลือ</th></tr></thead><tbody>
-       ${shorts.map(x=>`<tr><td>${esc(shortName(x.p.name))} <span class="sku">${x.p.sku}</span></td><td class="num">${qf(x.need)}</td><td class="num" style="color:var(--bad)">${qf(x.p.stock)}</td></tr>`).join('')}</tbody></table>`,
+       ${shorts.map(x=>`<tr><td>${esc(shortName(x.p.name))} <span class="sku">${esc(x.p.sku)}</span></td><td class="num">${qf(x.need)}</td><td class="num" style="color:var(--bad)">${qf(x.p.stock)}</td></tr>`).join('')}</tbody></table>`,
       `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="window._commitDaily()">ยืนยันบันทึก</button>`);
     window._commitDaily=commit;return;
   }
@@ -973,7 +1009,7 @@ function renderStock(){
     <button class="btn gold" onclick="editProduct()">＋ เพิ่มสินค้า</button></div>
   <div class="panel"><div class="panel-b toolbar">
     <div class="field" style="min-width:200px"><label class="fl">ค้นหา</label><input id="stQ" placeholder="ชื่อ หรือ SKU" value="${esc(stockFilter.q)}"></div>
-    <div class="field"><label class="fl">หมวดหมู่</label><select id="stCat"><option value="">ทั้งหมด</option>${cats.map(c=>`<option ${stockFilter.cat===c?'selected':''}>${c}</option>`).join('')}</select></div>
+    <div class="field"><label class="fl">หมวดหมู่</label><select id="stCat"><option value="">ทั้งหมด</option>${cats.map(c=>`<option ${stockFilter.cat===c?'selected':''}>${esc(c)}</option>`).join('')}</select></div>
     <div style="flex:1"></div>
     <div class="field"><label class="fl">&nbsp;</label><button class="btn" onclick="exportData()">⤓ Export JSON</button></div>
   </div></div>
@@ -981,18 +1017,18 @@ function renderStock(){
     <th>สินค้า</th><th>หมวด</th><th class="num">ต้นทุน/หน่วย</th><th class="num">คงเหลือ</th><th class="num">ขั้นต่ำ</th><th class="num">มูลค่า</th><th>สั่งจาก</th><th>สถานะ</th><th></th>
   </tr></thead><tbody>
   ${list.length?list.map(p=>{const ri=reorderInfo(p);return `<tr>
-    <td><div>${esc(p.name)}</div><span class="sku">${p.sku}</span></td>
-    <td class="muted small">${p.category}</td>
+    <td><div>${esc(p.name)}</div><span class="sku">${esc(p.sku)}</span></td>
+    <td class="muted small">${esc(p.category)}</td>
     <td class="num">${money2(p.cost)}</td>
-    <td class="num"><b>${qf(p.stock)}</b> <span class="muted small">${p.unit}</span></td>
+    <td class="num"><b>${qf(p.stock)}</b> <span class="muted small">${esc(p.unit)}</span></td>
     <td class="num muted">${qf(p.minStock)}</td>
     <td class="num">${money(p.stock*p.cost)}</td>
-    <td class="small">${p.supplierName?esc(p.supplierName)+(p.orderUrl?` <a href="${esc(p.orderUrl)}" target="_blank" rel="noopener">↗</a>`:''):'<span class="muted">—</span>'}</td>
+    <td class="small">${p.supplierName?esc(p.supplierName)+(p.orderUrl?` <a href="${esc(safeUrl(p.orderUrl))}" target="_blank" rel="noopener">↗</a>`:''):'<span class="muted">—</span>'}</td>
     <td>${statusBadge(ri.status)}</td>
     <td class="right"><div class="row-actions">
-      <button class="btn sm" onclick="quickStock('${p.sku}')">ปรับ</button>
-      <button class="btn sm" onclick="editProduct('${p.sku}')">แก้ไข</button>
-      <button class="btn sm danger" onclick="delProduct('${p.sku}')">ลบ</button></div></td>
+      <button class="btn sm" onclick="quickStock('${jsStr(p.sku)}')">ปรับ</button>
+      <button class="btn sm" onclick="editProduct('${jsStr(p.sku)}')">แก้ไข</button>
+      <button class="btn sm danger" onclick="delProduct('${jsStr(p.sku)}')">ลบ</button></div></td>
   </tr>`;}).join(''):`<tr><td colspan="9" class="empty">ไม่พบสินค้า</td></tr>`}
   </tbody></table></div></div>
 
@@ -1000,7 +1036,7 @@ function renderStock(){
     <div class="table-wrap"><table><thead><tr><th>เวลา</th><th>สินค้า</th><th class="num">จาก</th><th class="num">เป็น</th><th class="num">เปลี่ยน</th><th>เหตุผล</th></tr></thead><tbody>
     ${db.adjustments.length?db.adjustments.slice(0,15).map(a=>`<tr>
       <td class="small muted">${new Date(a.ts).toLocaleString('th-TH',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
-      <td>${esc(shortName(a.productName))} <span class="sku">${a.sku}</span></td>
+      <td>${esc(shortName(a.productName))} <span class="sku">${esc(a.sku)}</span></td>
       <td class="num">${qf(a.from)}</td><td class="num">${qf(a.to)}</td>
       <td class="num" style="color:${a.delta<0?'var(--bad)':'var(--ok)'};font-weight:600">${a.delta>0?'+':''}${qf(a.delta)}</td>
       <td class="small">${esc(a.reason)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">ยังไม่มีการปรับสต็อก</td></tr>'}
@@ -1013,12 +1049,12 @@ function renderStockTableOnly(){renderStock();$('#stQ').focus();const v=$('#stQ'
 function quickStock(sku){requireManager(()=>_quickStock(sku));}
 function _quickStock(sku){const p=pBySku(sku);
   openModal('ปรับจำนวนคงเหลือ — '+shortName(p.name),
-    `<div class="field"><label class="fl">จำนวนคงเหลือจริง (${p.unit})</label><input id="qs" type="number" value="${p.stock}"></div>
+    `<div class="field"><label class="fl">จำนวนคงเหลือจริง (${esc(p.unit)})</label><input id="qs" type="number" value="${p.stock}"></div>
      <div class="field"><label class="fl">เหตุผล (บังคับ)</label><select id="qsReason">
        <option value="">— เลือกเหตุผล —</option><option>นับ stock จริง</option><option>ของเสีย</option><option>รับของเข้า</option><option>แก้รายการผิด</option><option>อื่นๆ</option></select></div>
      <div class="field"><label class="fl">หมายเหตุเพิ่มเติม (ถ้ามี)</label><input id="qsNote" placeholder=""></div>
      <p class="muted small">การปรับจะถูกบันทึกในประวัติ (audit log)</p>`,
-    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="saveQuickStock('${sku}')">บันทึก</button>`);
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="saveQuickStock('${jsStr(sku)}')">บันทึก</button>`);
   setTimeout(()=>$('#qs').focus(),50);
 }
 /* optimistic local copy of an audit row (server writes the authoritative one) */
@@ -1035,7 +1071,7 @@ async function saveQuickStock(sku){const p=pBySku(sku);const to=+(parseFloat($('
 function editProduct(sku){requireManager(()=>_editProduct(sku));}
 function _editProduct(sku){
   const p=sku?pBySku(sku):{sku:'',name:'',category:'Skin Care',unit:'ซอง',cost:0,stock:0,minStock:5,reorderQty:10,monthlyUsage:0,sachetSize:null,supplierName:'',orderChannel:'',orderUrl:'',contact:'',leadTimeDays:'',packSize:'',supplierNotes:''};
-  const cats=['Skin Care','Hair Care','Liquid DIY','Facial Care','Powder DIY','Herbal Balms & Aroma','Fresh DIY','Cleaning','Consumable','Miscellaneous','Other'];
+  const cats=['Skin Care','Hair Care','Liquid DIY','Facial Care','Powder DIY','Herbal Balms & Aroma','Fresh DIY','Cleaning','Consumable','Merchandise','Miscellaneous','Other'];
   openModal(sku?'แก้ไขสินค้า':'เพิ่มสินค้าใหม่',
     `<div class="f2">
       <div class="field"><label class="fl">SKU</label><input id="f_sku" value="${esc(p.sku)}" ${sku?'disabled':''} placeholder="เช่น SC09"></div>
@@ -1060,11 +1096,12 @@ function _editProduct(sku){
       <div class="field"><label class="fl">Pack size</label><input id="f_pack" value="${esc(p.packSize||'')}" placeholder="เช่น 50 ซอง/แพ็ค"></div>
      </div>
      <div class="field"><label class="fl">หมายเหตุผู้ขาย</label><input id="f_snote" value="${esc(p.supplierNotes||'')}"></div>`,
-    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="saveProduct('${sku||''}')">บันทึก</button>`);
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="saveProduct('${jsStr(sku||'')}')">บันทึก</button>`);
 }
 async function saveProduct(sku){
   const nsku=sku||$('#f_sku').value.trim().toUpperCase();
   if(!nsku){toast('ใส่ SKU','bad');return;}
+  if(!sku&&!/^[A-Z0-9_-]+$/.test(nsku)){toast('SKU ใช้ได้เฉพาะ A-Z 0-9 _ - เท่านั้น','bad');return;}
   if(!sku&&pBySku(nsku)){toast('SKU ซ้ำ','bad');return;}
   const name=$('#f_name').value.trim();if(!name){toast('ใส่ชื่อสินค้า','bad');return;}
   const newStock=+(parseFloat($('#f_stock').value)||0);
@@ -1087,7 +1124,7 @@ function _delProduct(sku){const p=pBySku(sku);
   const used=db.services.filter(s=>(s.recipe||[]).some(r=>r.type==='choice'?(r.options||[]).some(o=>o.sku===sku):r.sku===sku)).map(s=>s.name);
   openModal('ลบสินค้า',`<p>ยืนยันลบ <b>${esc(shortName(p.name))}</b> (${sku})?</p>
     ${used.length?`<p class="muted small">⚠ สินค้านี้อยู่ในสูตรของ ${used.length} บริการ: ${used.map(esc).join(', ')} — จะถูกถอดออกจากสูตรด้วย</p>`:''}`,
-    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn danger" onclick="confirmDelProduct('${sku}')">ลบ</button>`);
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn danger" onclick="confirmDelProduct('${jsStr(sku)}')">ลบ</button>`);
 }
 async function confirmDelProduct(sku){
   if(!await guard(api.deleteProduct(sku),'ลบแล้ว'))return;
@@ -1119,8 +1156,8 @@ function renderRecipes(){
         :`<span class="tag">${esc(r.sku)}×${qf(r.qty)}</span>`).join(' ')+(items.length>5?` <span class="muted small">+${items.length-5}</span>`:''):'<span class="muted small">— ยังไม่มีสูตร —</span>'}</td>
     <td class="num"><b>${money(recipeCost(s))}</b></td>
     <td class="right"><div class="row-actions">
-      <button class="btn sm" onclick="editRecipe('${s.id}')">แก้สูตร</button>
-      <button class="btn sm danger" onclick="delService('${s.id}')">ลบ</button></div></td>
+      <button class="btn sm" onclick="editRecipe('${jsStr(s.id)}')">แก้สูตร</button>
+      <button class="btn sm danger" onclick="delService('${jsStr(s.id)}')">ลบ</button></div></td>
   </tr>`;}).join('')}
   </tbody></table></div></div>`;
 }
@@ -1140,10 +1177,10 @@ function _editRecipe(id){
        <button class="btn sm" onclick="addRcpRow()">＋ วัตถุดิบคงที่</button>
        <button class="btn sm" onclick="addChoiceRow()">＋ กลุ่มลูกค้าเลือกเอง (เช่น กลิ่น)</button></div>
      <div class="kv" style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px"><span>ต้นทุนวัตถุดิบรวม/ครั้ง (ประมาณ)</span><b id="rcpCost">฿0</b></div>`,
-    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="saveRecipe('${id||''}')">บันทึกสูตร</button>`);
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="saveRecipe('${jsStr(id||'')}')">บันทึกสูตร</button>`);
   drawRcpRows();
 }
-function prodOptions(sel){return db.products.map(p=>`<option value="${p.sku}" ${p.sku===sel?'selected':''}>${p.sku} · ${esc(shortName(p.name))}</option>`).join('');}
+function prodOptions(sel){return db.products.map(p=>`<option value="${esc(p.sku)}" ${p.sku===sel?'selected':''}>${esc(p.sku)} · ${esc(shortName(p.name))}</option>`).join('');}
 function drawRcpRows(){
   $('#rcpRows').innerHTML=recipeDraft.map((r,i)=>{
     if(r.type==='choice'){
@@ -1189,7 +1226,7 @@ async function saveRecipe(id){
 function delService(id){requireManager(()=>_delService(id));}
 function _delService(id){const s=svcById(id);
   openModal('ลบบริการ',`<p>ยืนยันลบบริการ <b>${esc(s.name)}</b>? <br><span class="muted small">ประวัติการบันทึกเดิมยังคงอยู่ในรายงาน</span></p>`,
-    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn danger" onclick="confirmDelService('${id}')">ลบ</button>`);
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn danger" onclick="confirmDelService('${jsStr(id)}')">ลบ</button>`);
 }
 async function confirmDelService(id){
   if(!await guard(api.deleteService(id),'ลบบริการแล้ว'))return;
@@ -1220,7 +1257,7 @@ function renderReports(){
     <div class="field"><label class="fl">${rep.mode==='month'?'เดือน':'วันที่อ้างอิง'}</label>
       <input type="${rep.mode==='month'?'month':'date'}" id="rDate" value="${rep.mode==='month'?monthKey(rep.date):rep.date}"></div>
     <div class="field"><label class="fl">กรองบริการ</label><select id="rSvc"><option value="">ทุกบริการ</option>${db.services.map(s=>`<option ${rep.svc===s.name?'selected':''}>${esc(s.name)}</option>`).join('')}</select></div>
-    <div class="field"><label class="fl">กรองสินค้า</label><select id="rSku"><option value="">ทุกสินค้า</option>${db.products.map(p=>`<option value="${p.sku}" ${rep.sku===p.sku?'selected':''}>${p.sku} · ${esc(shortName(p.name))}</option>`).join('')}</select></div>
+    <div class="field"><label class="fl">กรองสินค้า</label><select id="rSku"><option value="">ทุกสินค้า</option>${db.products.map(p=>`<option value="${esc(p.sku)}" ${rep.sku===p.sku?'selected':''}>${esc(p.sku)} · ${esc(shortName(p.name))}</option>`).join('')}</select></div>
     <div style="flex:1"></div>
     <div class="field"><label class="fl">&nbsp;</label><button class="btn" onclick="exportReportCSV()">⤓ CSV</button></div>
   </div></div>
@@ -1240,7 +1277,7 @@ function renderReports(){
 
     <div class="panel"><div class="panel-h"><h3>สรุปตามสินค้า</h3></div><div class="table-wrap"><table>
       <thead><tr><th>สินค้า</th><th class="num">ปริมาณ</th><th class="num">ต้นทุน</th></tr></thead><tbody>
-      ${prodRows.length?prodRows.map(x=>`<tr><td>${esc(shortName(x.p.name))} <span class="sku">${x.p.sku}</span></td><td class="num">${qf(x.qty)} ${x.p.unit}</td><td class="num">${money(x.cost)}</td></tr>`).join(''):'<tr><td colspan="3" class="empty">ไม่มีข้อมูล</td></tr>'}
+      ${prodRows.length?prodRows.map(x=>`<tr><td>${esc(shortName(x.p.name))} <span class="sku">${esc(x.p.sku)}</span></td><td class="num">${qf(x.qty)} ${esc(x.p.unit)}</td><td class="num">${money(x.cost)}</td></tr>`).join(''):'<tr><td colspan="3" class="empty">ไม่มีข้อมูล</td></tr>'}
       </tbody></table></div></div>
   </div>`;
   $('#rDate').addEventListener('change',e=>{rep.date=rep.mode==='month'?e.target.value+'-01':e.target.value;renderReports();});
@@ -1301,13 +1338,13 @@ function renderReorder(){
     <th>สินค้า</th><th class="num">คงเหลือ</th><th class="num">ใช้/วัน (30d)</th><th class="num">พอใช้ (วัน)</th><th class="num">แนะนำสั่ง</th><th class="num">มูลค่าสั่ง</th><th>สั่งจาก</th><th>สถานะ</th>
   </tr></thead><tbody>
   ${rl.length?rl.map(r=>{const p=r.p;return `<tr>
-    <td><div>${esc(shortName(p.name))} ${r.anomaly?'<span class="badge b-warn" style="margin-left:4px">⚡ ผิดปกติ</span>':''}</div><span class="sku">${p.sku} · ${p.category}</span></td>
-    <td class="num"><b>${qf(p.stock)}</b> <span class="muted small">${p.unit}</span></td>
+    <td><div>${esc(shortName(p.name))} ${r.anomaly?'<span class="badge b-warn" style="margin-left:4px">⚡ ผิดปกติ</span>':''}</div><span class="sku">${esc(p.sku)} · ${esc(p.category)}</span></td>
+    <td class="num"><b>${qf(p.stock)}</b> <span class="muted small">${esc(p.unit)}</span></td>
     <td class="num">${qf(+r.daily.toFixed(2))}</td>
     <td class="num">${r.cover===Infinity?'<span class="muted">—</span>':qf(Math.round(r.cover))}</td>
     <td class="num"><b>${r.suggest>0?qf(r.suggest):'—'}</b></td>
     <td class="num">${r.suggest>0?money(r.suggest*p.cost):'—'}</td>
-    <td class="small">${p.supplierName?esc(p.supplierName)+(p.orderUrl?` <a href="${esc(p.orderUrl)}" target="_blank" rel="noopener">↗</a>`:'')+(p.leadTimeDays!==''&&p.leadTimeDays!=null?`<br><span class="muted">lead ${p.leadTimeDays}d</span>`:''):'<span class="muted">—</span>'}</td>
+    <td class="small">${p.supplierName?esc(p.supplierName)+(p.orderUrl?` <a href="${esc(safeUrl(p.orderUrl))}" target="_blank" rel="noopener">↗</a>`:'')+(p.leadTimeDays!==''&&p.leadTimeDays!=null?`<br><span class="muted">lead ${p.leadTimeDays}d</span>`:''):'<span class="muted">—</span>'}</td>
     <td>${statusBadge(r.status)}</td>
   </tr>`;}).join(''):'<tr><td colspan="8" class="empty">ไม่มีรายการในกลุ่มนี้ ✓</td></tr>'}
   </tbody></table></div></div>`}
@@ -1322,10 +1359,10 @@ function renderReorderBySupplier(rl){
     const items=groups[k];const tot=items.reduce((t,r)=>t+r.suggest*r.p.cost,0);
     const any=items[0].p;
     return `<div class="panel"><div class="panel-h"><h3>🏪 ${esc(k)}</h3>
-      <span class="hint">${items.length} รายการ · รวม ${money(tot)}${any.supplierName&&any.orderChannel?' · '+esc(any.orderChannel):''}${any.supplierName&&any.contact?' · '+esc(any.contact):''}${any.supplierName&&any.orderUrl?` · <a href="${esc(any.orderUrl)}" target="_blank" rel="noopener">เปิดลิงก์ ↗</a>`:''}</span></div>
+      <span class="hint">${items.length} รายการ · รวม ${money(tot)}${any.supplierName&&any.orderChannel?' · '+esc(any.orderChannel):''}${any.supplierName&&any.contact?' · '+esc(any.contact):''}${any.supplierName&&any.orderUrl&&safeUrl(any.orderUrl)?` · <a href="${esc(safeUrl(any.orderUrl))}" target="_blank" rel="noopener">เปิดลิงก์ ↗</a>`:''}</span></div>
       <div class="table-wrap"><table><thead><tr><th>สินค้า</th><th class="num">คงเหลือ</th><th class="num">แนะนำสั่ง</th><th class="num">มูลค่า</th><th>สถานะ</th></tr></thead><tbody>
-      ${items.map(r=>`<tr><td>${esc(shortName(r.p.name))} <span class="sku">${r.p.sku}</span></td>
-        <td class="num">${qf(r.p.stock)} ${r.p.unit}</td><td class="num"><b>${qf(r.suggest)}</b></td>
+      ${items.map(r=>`<tr><td>${esc(shortName(r.p.name))} <span class="sku">${esc(r.p.sku)}</span></td>
+        <td class="num">${qf(r.p.stock)} ${esc(r.p.unit)}</td><td class="num"><b>${qf(r.suggest)}</b></td>
         <td class="num">${money(r.suggest*r.p.cost)}</td><td>${statusBadge(r.status)}</td></tr>`).join('')}
       </tbody></table></div></div>`;
   }).join('');
@@ -1387,8 +1424,8 @@ function renderCount(){
       <div style="margin:8px 0"><span class="badge ${bc}">${bt}</span></div>
       <div class="sub">ครบกำหนด ${thDate(st.deadline)}${st.count&&st.count.status==='closed'?' · นับเมื่อ '+thDate(st.count.closedTs.slice(0,10)):''}</div>
       <div style="margin-top:10px">${st.state==='done'
-        ? `<button class="btn sm" onclick="viewCount('${st.count.id}')">ดูผล / ใบสั่งซื้อ</button>`
-        : `<button class="btn sm gold" onclick="startCount('${pk}',${round})">${st.count&&st.count.status==='open'?'นับต่อ':'เริ่มนับ'}</button>`}</div>
+        ? `<button class="btn sm" onclick="viewCount('${jsStr(st.count.id)}')">ดูผล / ใบสั่งซื้อ</button>`
+        : `<button class="btn sm gold" onclick="startCount('${jsStr(pk)}',${round})">${st.count&&st.count.status==='open'?'นับต่อ':'เริ่มนับ'}</button>`}</div>
     </div>`;};
 
   let body=`
@@ -1408,20 +1445,20 @@ function renderCount(){
         <div class="field" style="min-width:200px"><label class="fl">ค้นหา</label><input id="cntQ" placeholder="ชื่อ / SKU / หมวด" value="${esc(countFilter)}"></div>
         <div class="field" style="min-width:200px"><label class="fl">ผู้ตรวจนับ</label><input id="cntBy" placeholder="ชื่อพนักงาน" value="${esc(active.countedBy||'')}" oninput="setCountBy(this.value)"></div>
         <div style="flex:1"></div>
-        <div class="field"><label class="fl">&nbsp;</label><button class="btn danger" onclick="cancelCount('${active.id}')">ยกเลิกรอบ</button></div>
+        <div class="field"><label class="fl">&nbsp;</label><button class="btn danger" onclick="cancelCount('${jsStr(active.id)}')">ยกเลิกรอบ</button></div>
       </div>
       <div class="table-wrap"><table><thead><tr><th>สินค้า</th><th>ที่มา</th><th class="num">ยอดระบบ</th><th style="width:120px">นับได้</th><th class="num">ส่วนต่าง</th></tr></thead><tbody>
-      ${Object.keys(byCat).map(cat=>`<tr style="background:var(--panel-2)"><td colspan="5"><b class="small">${cat}</b></td></tr>`+
+      ${Object.keys(byCat).map(cat=>`<tr style="background:var(--panel-2)"><td colspan="5"><b class="small">${esc(cat)}</b></td></tr>`+
         byCat[cat].map(p=>{const has=active.lines[p.sku]!==undefined;const cv=has?active.lines[p.sku]:'';const diff=has?(active.lines[p.sku]-p.stock):null;
-        return `<tr><td>${esc(shortName(p.name))} <span class="sku">${p.sku}</span></td>
+        return `<tr><td>${esc(shortName(p.name))} <span class="sku">${esc(p.sku)}</span></td>
           <td>${usedInRecipe(p.sku)?'<span class="tag">ตัดจากบริการ</span>':'<span class="tag" style="border-color:var(--gold);color:var(--gold-d)">นับเอง</span>'}</td>
-          <td class="num muted">${qf(p.stock)} ${p.unit}</td>
-          <td><input type="number" step="0.01" value="${cv}" placeholder="—" oninput="setCountLine('${active.id}','${p.sku}',this.value)" style="padding:6px;text-align:center"></td>
-          <td class="num" id="diff_${p.sku}" style="font-weight:600;color:${diff===null?'var(--muted)':diff<0?'var(--bad)':diff>0?'var(--ok)':'var(--muted)'}">${diff===null?'—':(diff>0?'+':'')+qf(diff)}</td></tr>`;}).join('')).join('')}
+          <td class="num muted">${qf(p.stock)} ${esc(p.unit)}</td>
+          <td><input type="number" step="0.01" value="${cv}" placeholder="—" oninput="setCountLine('${jsStr(active.id)}','${jsStr(p.sku)}',this.value)" style="padding:6px;text-align:center"></td>
+          <td class="num" id="diff_${esc(p.sku)}" style="font-weight:600;color:${diff===null?'var(--muted)':diff<0?'var(--bad)':diff>0?'var(--ok)':'var(--muted)'}">${diff===null?'—':(diff>0?'+':'')+qf(diff)}</td></tr>`;}).join('')).join('')}
       </tbody></table></div>
       <div class="panel-b" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;border-top:1px solid var(--line)">
         <span class="muted small">บันทึกอัตโนมัติระหว่างนับ · “ปิดรอบ” จะเขียนยอดนับเป็นสต็อกจริง สร้าง audit log และออกรายการสั่งซื้อ</span>
-        <button class="btn primary" onclick="closeCount('${active.id}')">ปิดรอบ &amp; อัปเดตสต็อก 🔒</button>
+        <button class="btn primary" onclick="closeCount('${jsStr(active.id)}')">ปิดรอบ &amp; อัปเดตสต็อก 🔒</button>
       </div></div>`;
   }
 
@@ -1437,7 +1474,7 @@ function renderCount(){
       <td class="num" style="color:${(r.varianceValueNet||0)<0?'var(--bad)':'var(--ok)'}">${money(r.varianceValueNet||0)}</td>
       <td class="num" style="color:var(--bad)">${money(r.shrinkValue||0)}</td>
       <td class="num">${(r.order||[]).length}</td>
-      <td class="right"><button class="btn sm" onclick="viewCount('${c.id}')">ดู</button></td></tr>`;}).join(''):'<tr><td colspan="8" class="empty">ยังไม่มีประวัติการนับ</td></tr>'}
+      <td class="right"><button class="btn sm" onclick="viewCount('${jsStr(c.id)}')">ดู</button></td></tr>`;}).join(''):'<tr><td colspan="8" class="empty">ยังไม่มีประวัติการนับ</td></tr>'}
     </tbody></table></div></div>`;
 
   $('#main').innerHTML=body;
@@ -1460,7 +1497,7 @@ function setCountBy(v){const c=db.counts.find(x=>x.id===activeCountId);if(!c)ret
   clearTimeout(_countByT);_countByT=setTimeout(()=>{api.countUpdate(c.id,{counted_by:v}).catch(()=>{});},600);}
 function cancelCount(id){requireManager(()=>{openModal('ยกเลิกรอบนับ',
   `<p>ยกเลิกและลบใบนับรอบนี้? (ยอดที่กรอกจะหายไป สต็อกไม่ถูกแก้)</p>`,
-  `<button class="btn" onclick="closeModal()">ปิด</button><button class="btn danger" onclick="doCancelCount('${id}')">ยกเลิกรอบ</button>`);});}
+  `<button class="btn" onclick="closeModal()">ปิด</button><button class="btn danger" onclick="doCancelCount('${jsStr(id)}')">ยกเลิกรอบ</button>`);});}
 async function doCancelCount(id){
   if(!await guard(api.countDelete(id),'ยกเลิกรอบแล้ว'))return;
   db.counts=db.counts.filter(c=>c.id!==id);if(activeCountId===id)activeCountId=null;closeModal();refreshBadges();renderCount();}
@@ -1481,11 +1518,11 @@ function _closeCount(id){
        <div class="card"><div class="lab">ของขาด (shrinkage)</div><div class="val" style="color:var(--bad);font-size:20px">${money(shrink)}</div></div>
      </div>
      ${vrows.length?`<div class="table-wrap" style="max-height:240px;overflow:auto"><table><thead><tr><th>สินค้า</th><th class="num">ระบบ</th><th class="num">นับได้</th><th class="num">ส่วนต่าง</th></tr></thead><tbody>
-       ${vrows.sort((a,b)=>a.val-b.val).map(v=>`<tr><td>${esc(shortName(v.name))} <span class="sku">${v.sku}</span></td><td class="num">${qf(v.from)}</td><td class="num">${qf(v.to)}</td>
+       ${vrows.sort((a,b)=>a.val-b.val).map(v=>`<tr><td>${esc(shortName(v.name))} <span class="sku">${esc(v.sku)}</span></td><td class="num">${qf(v.from)}</td><td class="num">${qf(v.to)}</td>
          <td class="num" style="color:${v.diff<0?'var(--bad)':'var(--ok)'};font-weight:600">${v.diff>0?'+':''}${qf(v.diff)}</td></tr>`).join('')}</tbody></table></div>`
        :'<p class="muted small">ไม่มีส่วนต่าง — ยอดนับตรงกับระบบทั้งหมด</p>'}
      <p class="muted small" style="margin-top:10px">กดยืนยันเพื่อเขียนยอดนับเป็นสต็อกจริง · บันทึก audit log ทุกตัวที่ต่าง · และสร้างรายการสั่งซื้อ</p>`,
-    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="commitCount('${id}')">ยืนยันปิดรอบ</button>`);
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="commitCount('${jsStr(id)}')">ยืนยันปิดรอบ</button>`);
 }
 async function commitCount(id){
   const c=db.counts.find(x=>x.id===id);if(!c)return;
@@ -1520,9 +1557,9 @@ function viewCount(id){
     <div class="card accent"><div class="lab">ต้องสั่งซื้อ</div><div class="val">${order.length}<small> รายการ</small></div><div class="sub">≈ ${money(tot)}</div></div>
   </div>
   <div class="panel"><div class="panel-h"><h3>📦 รายการที่ต้องสั่งซื้อ (จากรอบนับนี้)</h3>
-    <button class="btn sm gold" onclick="exportCountOrder('${id}')">⤓ ใบสั่งซื้อ (CSV)</button></div>
+    <button class="btn sm gold" onclick="exportCountOrder('${jsStr(id)}')">⤓ ใบสั่งซื้อ (CSV)</button></div>
     <div class="table-wrap"><table><thead><tr><th>สินค้า</th><th class="num">แนะนำสั่ง</th><th class="num">มูลค่า</th><th>สั่งจาก</th><th>สถานะ</th></tr></thead><tbody>
-    ${order.length?order.map(o=>`<tr><td>${esc(shortName(o.name))} <span class="sku">${o.sku}</span></td>
+    ${order.length?order.map(o=>`<tr><td>${esc(shortName(o.name))} <span class="sku">${esc(o.sku)}</span></td>
       <td class="num"><b>${qf(o.suggest)}</b></td><td class="num">${money(o.suggest*o.cost)}</td>
       <td class="small">${o.supplierName?esc(o.supplierName):'<span class="muted">—</span>'}</td><td>${statusBadge(o.status)}</td></tr>`).join(''):'<tr><td colspan="5" class="empty">ไม่มีรายการต้องสั่ง ณ เวลาที่ปิดรอบ ✓</td></tr>'}
     </tbody></table></div></div>
@@ -1569,10 +1606,10 @@ function renderSettings(){
   ${mgr?`<div class="panel"><div class="panel-h"><h3>🏬 สาขา (Branches)</h3><span class="hint">${branches.length} สาขา · เฉพาะผู้จัดการ</span></div><div class="panel-b">
     <div class="table-wrap"><table><thead><tr><th>รหัส</th><th>ชื่อสาขา</th><th class="num">ลำดับ</th><th></th></tr></thead><tbody>
     ${branches.map(b=>`<tr>
-      <td><span class="sku">${b.id}</span></td>
+      <td><span class="sku">${esc(b.id)}</span></td>
       <td><input id="bn_${b.id}" value="${esc(b.name)}" style="max-width:240px"></td>
       <td class="num" style="width:80px"><input id="bs_${b.id}" type="number" value="${b.sort}" style="text-align:center"></td>
-      <td class="right"><button class="btn sm gold" onclick="saveBranchRow('${b.id}')">บันทึก</button></td></tr>`).join('')}
+      <td class="right"><button class="btn sm gold" onclick="saveBranchRow('${jsStr(b.id)}')">บันทึก</button></td></tr>`).join('')}
     </tbody></table></div>
     <div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
       <b class="small">เพิ่มสาขาใหม่</b>
@@ -1614,7 +1651,14 @@ function exportData(){dl(JSON.stringify(db,null,2),'jaichan_stock_'+todayISO()+'
 function importData(input){const f=input.files[0];if(!f)return;const rd=new FileReader();
   rd.onload=async()=>{try{const o=JSON.parse(rd.result);
     if(!o.products||!o.services)throw new Error('โครงสร้างไฟล์ไม่ถูกต้อง');
-    const payload={products:o.products||[],services:o.services||[],logs:o.logs||[],adjustments:o.adjustments||[],counts:o.counts||[]};
+    // Regenerate log/count ids per import so the SAME export can be loaded into
+    // several branches without rows being silently dropped on a primary-key clash
+    // (logs.id / counts.id are global). Products are keyed per (branch,sku) and
+    // services are shared, so those keep their ids.
+    const payload={products:o.products||[],services:o.services||[],
+      logs:(o.logs||[]).map(l=>({...l,id:uid()})),
+      adjustments:o.adjustments||[],
+      counts:(o.counts||[]).map(c=>({...c,id:uid()}))};
     if(!await guard(api.importAll(payload),'นำเข้าขึ้นคลาวด์สำเร็จ'))return;
     await loadAll();refreshBadges();go(current);
   }catch(e){toast('นำเข้าไม่สำเร็จ: '+errMsg(e),'bad');}};
@@ -1641,7 +1685,7 @@ function doCloneCatalog(){requireManager(()=>{
   openModal('คัดลอกแคตตาล็อก',
     `<p>คัดลอกรายการสินค้าทั้งหมดจาก <b>${esc(branchName(from))}</b> เข้า <b>${esc(branchName(to))}</b>?</p>
      <p class="muted small">สต็อก &amp; ยอดใช้ต่อเดือนของรายการที่คัดลอกจะตั้งเป็น 0 · รายการที่มีอยู่แล้วจะไม่ถูกเขียนทับ</p>`,
-    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="confirmClone('${from}')">คัดลอก</button>`);
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="confirmClone('${jsStr(from)}')">คัดลอก</button>`);
 });}
 async function confirmClone(from){
   const to=actBranch();closeModal();
