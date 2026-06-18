@@ -156,6 +156,16 @@ label.fl{display:block;font-size:11.5px;color:var(--muted);margin:0 0 5px;font-w
 .mgr{font-size:11px;padding:7px 9px;border-radius:9px;background:var(--panel-2);border:1px solid var(--line);color:var(--muted);
   display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:2px;margin-top:10px;font-weight:600}
 .mgr.on{background:var(--ok-bg);color:var(--ok);border-color:#cfe6d8}
+/* branch selector */
+.branchbox{margin:2px 4px 10px;padding:9px 10px;border:1px solid var(--line);border-radius:11px;background:var(--panel-2)}
+.branchbox .bl{font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:5px}
+.branchbox select{padding:8px 9px;font-size:13.5px;font-weight:600}
+.branchbox .blk{display:flex;align-items:center;gap:7px;font-size:13.5px;font-weight:600;color:var(--ink)}
+.branchbox .blk .pin{font-size:11px;color:var(--muted);font-weight:500}
+.branchbox.all{background:linear-gradient(135deg,#fffaf2,#fff);border-color:#eadfca}
+.branch-chip{display:inline-block;background:var(--ink);color:#fff;border-radius:7px;padding:2px 9px;font-size:11px;font-weight:600;letter-spacing:.4px}
+.branch-chip.all{background:var(--gold)}
+@media(max-width:860px){.branchbox{margin:0;flex:0 0 auto;padding:6px 8px;min-width:150px}.branchbox .bl{display:none}}
 /* login overlay */
 .auth-bg{position:fixed;inset:0;background:linear-gradient(135deg,#efe9df,#f6f2ec);display:flex;align-items:center;justify-content:center;z-index:200;padding:20px}
 .auth-card{background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 20px 60px rgba(43,37,32,.18);width:100%;max-width:380px;padding:30px 28px}
@@ -190,7 +200,8 @@ label.fl{display:block;font-size:11.5px;color:var(--muted);margin:0 0 5px;font-w
 <div class="app">
   <!-- ============================ SIDEBAR / NAV ============================ -->
   <aside class="sidebar">
-    <div class="brand"><h1><span class="dot"></span>JAI CHAN</h1><small>Stock Management · Siam Discovery</small></div>
+    <div class="brand"><h1><span class="dot"></span>JAI CHAN</h1><small id="brandSub">Stock Management</small></div>
+    <div class="branchbox" id="branchBox" style="display:none"></div>
     <nav class="nav" id="nav">
       <button data-tab="dashboard" class="active"><span class="ic">◼</span><span class="lbl">Dashboard</span></button>
       <button data-tab="daily"><span class="ic">＋</span><span class="lbl">บันทึกบริการ</span></button>
@@ -309,6 +320,15 @@ function buildDemo(){
    db (in-memory) is a read cache; all writes go through sb / RPC then update db.
    ========================================================================== */
 let sb=null, currentUser=null, currentRole='staff';
+/* ---- multi-branch state ---- */
+const BRANCH_ALL='__ALL__';                 // manager's consolidated overview
+let branches=[];                            // [{id,name,sort}]
+let myBranch='siam';                        // staff home branch (from profile)
+let currentBranch='siam';                   // branch currently being viewed
+let allData=null;                           // {products,logs} across branches (manager overview)
+const branchName=id=>{const b=branches.find(x=>x.id===id);return b?b.name:id;};
+function actBranch(){return (currentBranch&&currentBranch!==BRANCH_ALL)?currentBranch:myBranch;}
+function isAllView(){return currentBranch===BRANCH_ALL;}
 function initSupabase(){
   const cfg=window.JAICHAN_CONFIG||{};
   if(!cfg.SUPABASE_URL||!cfg.SUPABASE_ANON_KEY||/YOUR-/.test(cfg.SUPABASE_URL+cfg.SUPABASE_ANON_KEY)){
@@ -322,7 +342,7 @@ function initSupabase(){
 function save(){}
 
 /* ---- column mapping (snake_case DB <-> camelCase app) ---- */
-const mapProduct=r=>({sku:r.sku,name:r.name,category:r.category,unit:r.unit,cost:+r.cost,
+const mapProduct=r=>({sku:r.sku,branchId:r.branch_id,name:r.name,category:r.category,unit:r.unit,cost:+r.cost,
   sachetSize:r.sachet_size==null?null:+r.sachet_size,stock:+r.stock,minStock:+r.min_stock,
   reorderQty:+r.reorder_qty,monthlyUsage:+r.monthly_usage,supplierName:r.supplier_name||'',
   orderChannel:r.order_channel||'',orderUrl:r.order_url||'',contact:r.contact||'',
@@ -332,14 +352,22 @@ const mapAdj=r=>({id:r.id,ts:r.ts,sku:r.sku,productName:r.product_name,from:+r.f
 const mapCount=r=>({id:r.id,periodKey:r.period_key,round:r.round,label:r.label,deadline:r.deadline,status:r.status,
   startedTs:r.started_ts,closedTs:r.closed_ts,countedBy:r.counted_by||'',lines:r.lines||{},result:r.result||null});
 
-/* ---- load everything from Supabase into db ---- */
-async function loadAll(){
+const emptyDb=()=>({products:[],services:db&&db.services?db.services:[],logs:[],adjustments:[],counts:[],meta:{},settings:{}});
+/* ---- load branches list (once) ---- */
+async function loadBranches(){
+  const{data,error}=await sb.from('branches').select('*').eq('active',true).order('sort');
+  if(error)throw error;
+  branches=(data||[]).map(b=>({id:b.id,name:b.name,sort:b.sort}));
+}
+/* ---- load ONE branch's data into db (services are global) ---- */
+async function loadAll(branch){
+  branch=branch||actBranch();
   const [P,S,L,A,C]=await Promise.all([
-    sb.from('products').select('*').order('sku'),
+    sb.from('products').select('*').eq('branch_id',branch).order('sku'),
     sb.from('services').select('*'),
-    sb.from('logs').select('*'),
-    sb.from('adjustments').select('*').order('ts',{ascending:false}).limit(500),
-    sb.from('counts').select('*')
+    sb.from('logs').select('*').eq('branch_id',branch),
+    sb.from('adjustments').select('*').eq('branch_id',branch).order('ts',{ascending:false}).limit(500),
+    sb.from('counts').select('*').eq('branch_id',branch)
   ]);
   for(const r of [P,S,L,A,C])if(r.error)throw r.error;
   db={
@@ -351,18 +379,29 @@ async function loadAll(){
     meta:{},settings:{}
   };
 }
+/* ---- manager overview: products + today's logs across ALL branches ---- */
+async function loadAllBranches(){
+  const [P,L]=await Promise.all([
+    sb.from('products').select('*'),
+    sb.from('logs').select('*').eq('date',todayISO())
+  ]);
+  for(const r of [P,L])if(r.error)throw r.error;
+  allData={products:(P.data||[]).map(mapProduct),logs:(L.data||[]).map(mapLog)};
+}
 /* ---- write API (each persists to Supabase, throws on error) ---- */
 async function rpc(fn,args){const{error}=await sb.rpc(fn,args);if(error)throw error;}
 const api={
-  logService:e=>rpc('log_service',{p_id:e.id,p_date:e.date,p_service:e.service,p_service_id:e.serviceId,p_count:e.count,p_usage:e.usage,p_choices:e.choices}),
+  logService:e=>rpc('log_service',{p_branch:actBranch(),p_id:e.id,p_date:e.date,p_service:e.service,p_service_id:e.serviceId,p_count:e.count,p_usage:e.usage,p_choices:e.choices}),
   voidLog:id=>rpc('void_log',{p_id:id}),
-  adjustStock:(sku,to,reason)=>rpc('adjust_stock',{p_sku:sku,p_to:to,p_reason:reason}),
-  saveProduct:(obj,reason)=>rpc('save_product',{p:obj,p_reason:reason||null}),
-  deleteProduct:sku=>rpc('delete_product',{p_sku:sku}),
+  adjustStock:(sku,to,reason)=>rpc('adjust_stock',{p_branch:actBranch(),p_sku:sku,p_to:to,p_reason:reason}),
+  saveProduct:(obj,reason)=>rpc('save_product',{p_branch:actBranch(),p:obj,p_reason:reason||null}),
+  deleteProduct:sku=>rpc('delete_product',{p_branch:actBranch(),p_sku:sku}),
   saveService:svc=>rpc('save_service',{p:svc}),
   deleteService:id=>rpc('delete_service',{p_id:id}),
   closeCount:(id,result)=>rpc('close_count',{p_id:id,p_result:result}),
-  importAll:payload=>rpc('import_all',{p:payload}),
+  importAll:payload=>rpc('import_all',{p_branch:actBranch(),p:payload}),
+  cloneCatalog:(from,to)=>rpc('clone_catalog',{p_from:from,p_to:to}),
+  saveBranch:(id,name,sort)=>rpc('save_branch',{p_id:id,p_name:name,p_sort:sort}),
   countInsert:async row=>{const{error}=await sb.from('counts').insert(row);if(error)throw error;},
   countUpdate:async(id,patch)=>{const{error}=await sb.from('counts').update(patch).eq('id',id);if(error)throw error;},
   countDelete:async id=>{const{error}=await sb.from('counts').delete().eq('id',id);if(error)throw error;}
@@ -448,17 +487,52 @@ async function doLogin(){
 }
 async function doLogout(){await sb.auth.signOut();currentUser=null;location.reload();}
 async function fetchRole(){
-  try{const{data}=await sb.from('profiles').select('role').eq('id',currentUser.id).single();
-    currentRole=(data&&data.role)||'staff';}catch(e){currentRole='staff';}
+  try{const{data}=await sb.from('profiles').select('role,branch_id').eq('id',currentUser.id).single();
+    currentRole=(data&&data.role)||'staff';
+    myBranch=(data&&data.branch_id)||'siam';}catch(e){currentRole='staff';myBranch='siam';}
 }
 let _entered=false;
 async function enterApp(){
   if(_entered)return; _entered=true;          // guard against duplicate auth events
   $('#authHint').textContent='กำลังโหลดข้อมูล…';
   await fetchRole();
-  try{await loadAll();}catch(e){authMsg('โหลดข้อมูลไม่สำเร็จ: '+errMsg(e));return;}
+  try{await loadBranches();}catch(e){/* branches table optional; ignore */}
+  // managers default to the consolidated overview; staff are locked to their branch
+  currentBranch=isManager()?BRANCH_ALL:myBranch;
+  try{if(isAllView()){db=emptyDb();await loadAllBranches();}else await loadAll(currentBranch);}
+  catch(e){authMsg('โหลดข้อมูลไม่สำเร็จ: '+errMsg(e));return;}
   $('#authBg').style.display='none';
-  refreshBadges();refreshManagerUI();go('dashboard');
+  renderBranchBox();refreshBadges();refreshManagerUI();go('dashboard');
+}
+/* render the branch selector (manager: dropdown + overview; staff: locked label) */
+function renderBranchBox(){
+  const box=$('#branchBox');if(!box)return;
+  if(!currentUser||!branches.length){box.style.display='none';return;}
+  box.style.display='';
+  box.classList.toggle('all',isAllView());
+  if(isManager()){
+    const opts=`<option value="${BRANCH_ALL}" ${isAllView()?'selected':''}>★ ภาพรวมทุกสาขา</option>`
+      +branches.map(b=>`<option value="${b.id}" ${currentBranch===b.id?'selected':''}>${esc(b.name)}</option>`).join('');
+    box.innerHTML=`<div class="bl">สาขา</div><select id="branchSel" onchange="switchBranch(this.value)">${opts}</select>`;
+  }else{
+    box.innerHTML=`<div class="bl">สาขา</div><div class="blk"><span class="branch-chip">${esc(branchName(myBranch))}</span></div>`;
+  }
+  const sub=$('#brandSub');if(sub)sub.textContent='Stock Management'+(isAllView()?' · ทุกสาขา':' · '+branchName(actBranch()));
+}
+let _switching=false;
+async function switchBranch(id){
+  if(_switching||id===currentBranch)return; _switching=true;
+  const prev=currentBranch;currentBranch=id;
+  try{
+    if(isAllView()){db=emptyDb();await loadAllBranches();}else await loadAll(id);
+  }catch(e){currentBranch=prev;toast('สลับสาขาไม่สำเร็จ: '+errMsg(e),'bad');_switching=false;renderBranchBox();return;}
+  _switching=false;
+  // reset per-branch view state so we don't carry stale selections across branches
+  activeCountId=null;dailyDraft={date:todayISO(),counts:{},choices:{}};
+  renderBranchBox();refreshBadges();
+  // ALL view only supports dashboard + reorder; bounce other tabs to dashboard
+  if(isAllView()&&!['dashboard','reorder','settings'].includes(current))current='dashboard';
+  go(current);
 }
 
 /* ---- lookups ---- */
@@ -548,12 +622,38 @@ $('#modalBg').addEventListener('click',e=>{if(e.target===$('#modalBg'))closeModa
    ROUTER
    ========================================================================== */
 const TABS={dashboard:renderDashboard,daily:renderDaily,stock:renderStock,recipes:renderRecipes,reports:renderReports,count:renderCount,reorder:renderReorder,settings:renderSettings};
+const ALL_TABS=['dashboard','reorder','settings'];   // tabs available in consolidated overview
 let current='dashboard';
-function go(tab){current=tab;$$('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));TABS[tab]();refreshManagerUI();window.scrollTo(0,0);}
+function go(tab){current=tab;$$('#nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
+  if(isAllView()){
+    if(tab==='dashboard')renderDashboardAll();
+    else if(tab==='reorder')renderReorderAll();
+    else if(tab==='settings')renderSettings();
+    else renderPickBranch(tab);
+  }else TABS[tab]();
+  refreshManagerUI();window.scrollTo(0,0);}
+/* shown when a branch-specific tab is opened in the consolidated overview */
+function renderPickBranch(tab){
+  const names={daily:'บันทึกบริการ',stock:'คลังสินค้า',recipes:'สูตรบริการ',reports:'รายงาน',count:'นับสต็อก'};
+  $('#main').innerHTML=`<div class="page-head"><div><h2>${names[tab]||'หน้านี้'}</h2><p>หน้านี้ทำงานรายสาขา</p></div></div>
+  <div class="panel"><div class="empty" style="padding:48px 20px">
+    <div style="font-size:30px;margin-bottom:10px">🏬</div>
+    <div style="font-size:15px;color:var(--ink);font-weight:600;margin-bottom:6px">เลือกสาขาก่อนทำรายการนี้</div>
+    <p class="muted small" style="max-width:420px;margin:0 auto 16px">“ภาพรวมทุกสาขา” ใช้ดูสรุปและออกใบสั่งซื้อรวมเท่านั้น — การบันทึก/แก้สต็อก/นับของ ต้องเลือกสาขาที่หน้างาน</p>
+    <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+      ${branches.map(b=>`<button class="btn gold" onclick="pickBranchThen('${b.id}','${tab}')">${esc(b.name)}</button>`).join('')}
+    </div></div></div>`;
+}
+async function pickBranchThen(id,tab){current=tab;await switchBranch(id);}
 $('#nav').addEventListener('click',e=>{const b=e.target.closest('button');if(b)go(b.dataset.tab);});
 function refreshBadges(){
-  const n=alertCount();const el=$('#navReorder');el.style.display=n?'inline-block':'none';el.textContent=n;
-  const due=countDue();const cb=$('#navCount');if(cb){cb.style.display=due?'inline-block':'none';
+  let n;
+  if(isAllView()){const prods=allData?allData.products:[];
+    n=prods.filter(p=>{const s=reorderInfoBase(p).status;return s==='out'||s==='reorder';}).length;}
+  else n=alertCount();
+  const el=$('#navReorder');el.style.display=n?'inline-block':'none';el.textContent=n;
+  const cb=$('#navCount');if(cb){
+    const due=isAllView()?null:countDue();cb.style.display=due?'inline-block':'none';
     cb.textContent=due&&due.overdue?'!':'•';cb.style.background=due&&due.overdue?'var(--bad)':'var(--low)';}
 }
 
@@ -609,6 +709,102 @@ function renderDashboard(){
     </tbody></table></div></div>`;
 }
 function shortName(n){const m=n.match(/\(([^)]+)\)/);return m?m[1]:n;}
+
+/* ============================================================================
+   MANAGER OVERVIEW — consolidated across ALL branches
+   ========================================================================== */
+/* reorder calc using baseline usage only (no per-branch logs loaded in overview) */
+function reorderInfoBase(p){
+  const daily=(p.monthlyUsage||0)/30;
+  const cover=daily>0?p.stock/daily:Infinity;
+  let status;
+  if(p.stock<=0)status='out';
+  else if(p.stock<=p.minStock||cover<=7)status='reorder';
+  else if(cover<=14||p.stock<=p.minStock*1.5)status='low';
+  else status='ok';
+  const target=daily*30+p.minStock;
+  const suggest=Math.max(0,Math.ceil(target-p.stock));
+  return {daily,cover,status,suggest};
+}
+function renderDashboardAll(){
+  const prods=allData?allData.products:[],logs=allData?allData.logs:[];
+  const g={};branches.forEach(b=>g[b.id]={b,items:0,value:0,out:0,reorder:0,low:0,today:0});
+  prods.forEach(p=>{const x=g[p.branchId];if(!x)return;x.items++;x.value+=p.stock*p.cost;
+    const ri=reorderInfoBase(p);if(ri.status==='out')x.out++;else if(ri.status==='reorder')x.reorder++;else if(ri.status==='low')x.low++;});
+  logs.forEach(l=>{const x=g[l.branchId];if(x)x.today+=l.count;});
+  const rows=branches.map(b=>g[b.id]);
+  const tot={value:rows.reduce((t,x)=>t+x.value,0),items:rows.reduce((t,x)=>t+x.items,0),
+    need:rows.reduce((t,x)=>t+x.out+x.reorder,0),today:rows.reduce((t,x)=>t+x.today,0)};
+  $('#main').innerHTML=`
+  <div class="page-head"><div><h2>ภาพรวมทุกสาขา</h2><p>สรุปสต็อก &amp; การสั่งซื้อรวม ${branches.length} สาขา · อัปเดต ${thDate(todayISO())}</p></div>
+    <button class="btn gold" onclick="go('reorder')">📦 ใบสั่งซื้อรวม →</button></div>
+  <div class="cards">
+    <div class="card accent"><div class="lab">มูลค่าสต็อกรวม</div><div class="val">${money(tot.value)}</div><div class="sub">${tot.items} รายการ · ${branches.length} สาขา</div></div>
+    <div class="card"><div class="lab">ต้องสั่งซื้อรวม</div><div class="val" style="color:var(--warn)">${tot.need}<small> รายการ</small></div><div class="sub">รวมทุกสาขา</div></div>
+    <div class="card"><div class="lab">บริการวันนี้รวม</div><div class="val">${tot.today}</div><div class="sub">ทุกสาขา</div></div>
+    <div class="card"><div class="lab">จำนวนสาขา</div><div class="val">${branches.length}</div><div class="sub">เปิดใช้งาน</div></div>
+  </div>
+  <div class="panel"><div class="panel-h"><h3>🏬 สรุปรายสาขา</h3><span class="hint">คลิกสาขาเพื่อเข้าไปจัดการ</span></div>
+    <div class="table-wrap"><table><thead><tr><th>สาขา</th><th class="num">มูลค่าสต็อก</th><th class="num">รายการ</th><th class="num">หมด</th><th class="num">ควรสั่ง</th><th class="num">ใกล้หมด</th><th class="num">บริการวันนี้</th><th></th></tr></thead><tbody>
+    ${rows.map(x=>`<tr>
+      <td><b>${esc(x.b.name)}</b> <span class="sku">${x.b.id}</span></td>
+      <td class="num">${money(x.value)}</td>
+      <td class="num">${x.items||'<span class="muted">—</span>'}</td>
+      <td class="num" style="color:${x.out?'var(--bad)':'var(--muted)'};font-weight:${x.out?'600':'400'}">${x.out||'—'}</td>
+      <td class="num" style="color:${x.reorder?'var(--warn)':'var(--muted)'};font-weight:${x.reorder?'600':'400'}">${x.reorder||'—'}</td>
+      <td class="num muted">${x.low||'—'}</td>
+      <td class="num">${x.today||'—'}</td>
+      <td class="right">${x.items?`<button class="btn sm" onclick="switchBranch('${x.b.id}')">เข้าสาขา →</button>`:`<button class="btn sm gold" onclick="switchBranch('${x.b.id}')">ตั้งค่า →</button>`}</td>
+    </tr>`).join('')}
+    </tbody></table></div></div>
+  ${rows.some(x=>!x.items)?`<p class="muted small" style="padding:0 4px">⚠ สาขาที่ยังไม่มีรายการสินค้า — เข้าสาขานั้นแล้วไปที่ <b>ตั้งค่า → คัดลอกแคตตาล็อก</b> เพื่อเริ่มต้น</p>`:''}`;
+}
+function masterOrder(){
+  const prods=allData?allData.products:[];
+  const need=prods.map(p=>({p,...reorderInfoBase(p)})).filter(r=>r.suggest>0);
+  const bySku={};
+  need.forEach(r=>{const k=r.p.sku;const e=bySku[k]||(bySku[k]={sku:k,name:r.p.name,cost:r.p.cost,sup:supLabel(r.p),per:{},total:0,value:0,worst:'low'});
+    e.per[r.p.branchId]=r.suggest;e.total+=r.suggest;e.value+=r.suggest*r.p.cost;
+    if(r.status==='out')e.worst='out';else if(r.status==='reorder'&&e.worst!=='out')e.worst='reorder';
+    if(e.sup==='ไม่ระบุแหล่ง'&&r.p.supplierName)e.sup=r.p.supplierName;});
+  const groups={};Object.values(bySku).forEach(e=>{(groups[e.sup]=groups[e.sup]||[]).push(e);});
+  return groups;
+}
+function renderReorderAll(){
+  const groups=masterOrder();
+  const keys=Object.keys(groups).sort();
+  const grand=keys.reduce((t,k)=>t+groups[k].reduce((s,e)=>s+e.value,0),0);
+  const nItems=keys.reduce((t,k)=>t+groups[k].length,0);
+  const bcols=branches;
+  $('#main').innerHTML=`
+  <div class="page-head"><div><h2>ใบสั่งซื้อรวมทุกสาขา</h2><p>รวมความต้องการของทุกสาขา จัดกลุ่มตามร้าน — สำหรับสั่งของรอบเดียว</p></div>
+    <button class="btn gold" onclick="exportReorderAllCSV()" ${nItems?'':'disabled'}>⤓ ใบสั่งซื้อรวม (CSV)</button></div>
+  <div class="cards">
+    <div class="card accent"><div class="lab">มูลค่าสั่งซื้อรวม</div><div class="val">${money(grand)}</div><div class="sub">${nItems} รายการ · ${keys.length} ร้าน</div></div>
+    ${bcols.map(b=>{const v=keys.reduce((t,k)=>t+groups[k].reduce((s,e)=>s+(e.per[b.id]||0)*e.cost,0),0);
+      return `<div class="card"><div class="lab">${esc(b.name)}</div><div class="val" style="font-size:19px">${money(v)}</div></div>`;}).join('')}
+  </div>
+  ${nItems?keys.map(k=>{const items=groups[k].sort((a,b)=>b.value-a.value);const tot=items.reduce((t,e)=>t+e.value,0);
+    return `<div class="panel"><div class="panel-h"><h3>🏪 ${esc(k)}</h3><span class="hint">${items.length} รายการ · รวม ${money(tot)}</span></div>
+    <div class="table-wrap"><table><thead><tr><th>สินค้า</th>${bcols.map(b=>`<th class="num">${esc(b.name)}</th>`).join('')}<th class="num">รวม</th><th class="num">มูลค่า</th><th>สถานะ</th></tr></thead><tbody>
+    ${items.map(e=>`<tr><td>${esc(shortName(e.name))} <span class="sku">${e.sku}</span></td>
+      ${bcols.map(b=>`<td class="num ${e.per[b.id]?'':'muted'}">${e.per[b.id]?'<b>'+qf(e.per[b.id])+'</b>':'—'}</td>`).join('')}
+      <td class="num"><b>${qf(e.total)}</b></td><td class="num">${money(e.value)}</td><td>${statusBadge(e.worst)}</td></tr>`).join('')}
+    </tbody></table></div></div>`;}).join('')
+    :'<div class="panel"><div class="empty">ทุกสาขาสต็อกเพียงพอ — ไม่มีรายการต้องสั่ง ✓</div></div>'}
+  <p class="muted small" style="padding:0 4px">หมายเหตุ: ภาพรวมคำนวณจากอัตราใช้ baseline (ยอดเฉลี่ยต่อเดือนของแต่ละสาขา) — สำหรับยอดเรียลไทม์อิงประวัติ 7/30 วัน ให้เข้าดูที่หน้า “แจ้งเตือนสั่งซื้อ” ของแต่ละสาขา</p>`;
+}
+function exportReorderAllCSV(){
+  const groups=masterOrder();const keys=Object.keys(groups).sort();const bcols=branches;
+  let rows=[['JAI CHAN SPA — ใบสั่งซื้อรวมทุกสาขา',todayISO()],[],
+    ['ร้าน','สินค้า','SKU',...bcols.map(b=>b.name),'รวม','ต้นทุน/หน่วย','มูลค่า','สถานะ']];
+  let grand=0;
+  keys.forEach(k=>{groups[k].sort((a,b)=>b.value-a.value).forEach(e=>{grand+=e.value;
+    rows.push([k,shortName(e.name),e.sku,...bcols.map(b=>e.per[b.id]||0),e.total,e.cost,Math.round(e.value),STATUS_BADGE[e.worst][1]]);});});
+  rows.push([],['รวมมูลค่าสั่งซื้อโดยประมาณ','','',...bcols.map(()=>''),'','',Math.round(grand)]);
+  const csv='﻿'+rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+  dl(csv,'reorder_all_branches_'+todayISO()+'.csv','text/csv');
+}
 
 /* ============================================================================
    PAGE: DAILY SERVICE ENTRY
@@ -1173,7 +1369,7 @@ async function startCount(pk,round){
   if(c&&c.status==='closed'){toast('รอบนี้ปิดแล้ว','bad');return;}
   if(!c){c={id:uid(),periodKey:pk,round,label:roundLabel(round),deadline:countDeadline(pk,round),
     status:'open',startedTs:new Date().toISOString(),closedTs:null,countedBy:'',lines:{},result:null};
-    const row={id:c.id,period_key:pk,round,label:c.label,deadline:c.deadline,status:'open',counted_by:'',lines:{}};
+    const row={id:c.id,branch_id:actBranch(),period_key:pk,round,label:c.label,deadline:c.deadline,status:'open',counted_by:'',lines:{}};
     if(!await guard(api.countInsert(row)))return;
     db.counts.push(c);}
   activeCountId=c.id;renderCount();
@@ -1356,20 +1552,50 @@ function renderSettings(){
       <div style="margin-top:12px"><button class="btn" onclick="doLogout()">ออกจากระบบ</button></div>
       <p class="muted small" style="margin-top:10px">เพิ่ม/ลบผู้ใช้ หรือเปลี่ยนสิทธิ์ ทำที่ Supabase → Authentication (ดูคู่มือ README)</p>
     </div></div>
-    <div class="panel"><div class="panel-h"><h3>ข้อมูลระบบ</h3></div><div class="panel-b">
-      <div class="kv"><span>สินค้าทั้งหมด</span><b>${db.products.length}</b></div>
-      <div class="kv"><span>บริการ (สูตร)</span><b>${db.services.length}</b></div>
-      <div class="kv"><span>ประวัติบันทึกบริการ</span><b>${db.logs.length} แถว</b></div>
-      <div class="kv"><span>ประวัติการปรับสต็อก</span><b>${db.adjustments.length} รายการ</b></div>
-      <div class="kv"><span>มูลค่าสต็อกปัจจุบัน</span><b>${money(stockValue())}</b></div>
+    <div class="panel"><div class="panel-h"><h3>ข้อมูลระบบ</h3><span class="hint">${currentBranch===BRANCH_ALL?'ทุกสาขา':esc(branchName(actBranch()))}</span></div><div class="panel-b">
+      ${currentBranch===BRANCH_ALL
+        ?`<div class="kv"><span>สินค้ารวมทุกสาขา</span><b>${allData?allData.products.length:0}</b></div>
+          <div class="kv"><span>จำนวนสาขา</span><b>${branches.length}</b></div>
+          <div class="kv"><span>บริการวันนี้รวม</span><b>${allData?allData.logs.reduce((t,l)=>t+l.count,0):0}</b></div>
+          <div class="kv"><span>มูลค่าสต็อกรวม</span><b>${money(allData?allData.products.reduce((t,p)=>t+p.stock*p.cost,0):0)}</b></div>`
+        :`<div class="kv"><span>สินค้าทั้งหมด</span><b>${db.products.length}</b></div>
+          <div class="kv"><span>บริการ (สูตร)</span><b>${db.services.length}</b></div>
+          <div class="kv"><span>ประวัติบันทึกบริการ</span><b>${db.logs.length} แถว</b></div>
+          <div class="kv"><span>ประวัติการปรับสต็อก</span><b>${db.adjustments.length} รายการ</b></div>
+          <div class="kv"><span>มูลค่าสต็อกปัจจุบัน</span><b>${money(stockValue())}</b></div>`}
     </div></div>
   </div>
 
+  ${mgr?`<div class="panel"><div class="panel-h"><h3>🏬 สาขา (Branches)</h3><span class="hint">${branches.length} สาขา · เฉพาะผู้จัดการ</span></div><div class="panel-b">
+    <div class="table-wrap"><table><thead><tr><th>รหัส</th><th>ชื่อสาขา</th><th class="num">ลำดับ</th><th></th></tr></thead><tbody>
+    ${branches.map(b=>`<tr>
+      <td><span class="sku">${b.id}</span></td>
+      <td><input id="bn_${b.id}" value="${esc(b.name)}" style="max-width:240px"></td>
+      <td class="num" style="width:80px"><input id="bs_${b.id}" type="number" value="${b.sort}" style="text-align:center"></td>
+      <td class="right"><button class="btn sm gold" onclick="saveBranchRow('${b.id}')">บันทึก</button></td></tr>`).join('')}
+    </tbody></table></div>
+    <div style="border-top:1px solid var(--line);margin-top:12px;padding-top:12px">
+      <b class="small">เพิ่มสาขาใหม่</b>
+      <div class="toolbar" style="margin-top:8px">
+        <div class="field"><label class="fl">รหัส (a-z, ไม่เว้นวรรค)</label><input id="nbId" placeholder="เช่น central" style="min-width:150px"></div>
+        <div class="field"><label class="fl">ชื่อสาขา</label><input id="nbName" placeholder="เช่น CentralWorld" style="min-width:180px"></div>
+        <div class="field"><label class="fl">&nbsp;</label><button class="btn" onclick="addBranch()">＋ เพิ่มสาขา</button></div>
+      </div>
+    </div>
+    ${currentBranch!==BRANCH_ALL?`<div style="border-top:1px solid var(--line);margin-top:6px;padding-top:12px">
+      <b class="small">คัดลอกแคตตาล็อกเข้าสาขานี้ (${esc(branchName(actBranch()))})</b>
+      <p class="muted small" style="margin:4px 0 8px">คัดลอกรายการสินค้า+ข้อมูลร้านจากอีกสาขา (สต็อก &amp; ยอดใช้ต่อเดือน = 0) เหมาะกับสาขาเปิดใหม่</p>
+      <div class="toolbar">
+        <div class="field"><label class="fl">คัดลอกจาก</label><select id="cloneFrom" style="min-width:170px">${branches.filter(b=>b.id!==actBranch()).map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select></div>
+        <div class="field"><label class="fl">&nbsp;</label><button class="btn gold" onclick="doCloneCatalog()">คัดลอกเข้า ${esc(branchName(actBranch()))}</button></div>
+      </div></div>`:'<p class="muted small" style="margin-top:10px">เลือกสาขาที่แถบด้านซ้ายก่อน เพื่อคัดลอกแคตตาล็อกเข้าสาขานั้น</p>'}
+  </div></div>`:''}
+
   <div class="panel"><div class="panel-h"><h3>สำรอง &amp; นำเข้าข้อมูล</h3></div><div class="panel-b">
-    <p class="muted small">Export = ดาวน์โหลด JSON สำรองทั้งหมด · นำเข้าครั้งแรก = ย้ายข้อมูลจากไฟล์เดิม (LocalStorage export) ขึ้นคลาวด์ ${mgr?'':'<b>(ต้องเป็นผู้จัดการ)</b>'}</p>
+    <p class="muted small">Export = ดาวน์โหลด JSON ${currentBranch===BRANCH_ALL?'(ภาพรวม)':'ของสาขา '+esc(branchName(actBranch()))} · นำเข้าครั้งแรก = ย้ายข้อมูลจากไฟล์เดิม เข้า <b>${currentBranch===BRANCH_ALL?'(เลือกสาขาก่อน)':esc(branchName(actBranch()))}</b> ${mgr?'':'<b>(ต้องเป็นผู้จัดการ)</b>'}</p>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
       <button class="btn primary" onclick="exportData()">⤓ Export JSON</button>
-      <button class="btn gold" onclick="requireManager(()=>$('#importFile').click())">⤒ นำเข้าข้อมูลขึ้นคลาวด์ครั้งแรก</button>
+      <button class="btn gold" onclick="requireManager(()=>{if(currentBranch===BRANCH_ALL){toast('เลือกสาขาก่อนนำเข้า','bad');return;}$('#importFile').click();})">⤒ นำเข้าข้อมูลขึ้นคลาวด์ครั้งแรก</button>
       <input type="file" id="importFile" accept="application/json,.json" style="display:none" onchange="importData(this)">
     </div>
   </div></div>
@@ -1393,6 +1619,35 @@ function importData(input){const f=input.files[0];if(!f)return;const rd=new File
     await loadAll();refreshBadges();go(current);
   }catch(e){toast('นำเข้าไม่สำเร็จ: '+errMsg(e),'bad');}};
   rd.readAsText(f);input.value='';}
+
+/* ---- branch management (manager) ---- */
+function saveBranchRow(id){requireManager(async()=>{
+  const name=($('#bn_'+id).value||'').trim();const sort=+(parseInt($('#bs_'+id).value)||0);
+  if(!name){toast('ใส่ชื่อสาขา','bad');return;}
+  if(!await guard(api.saveBranch(id,name,sort),'บันทึกสาขาแล้ว'))return;
+  await loadBranches();renderBranchBox();renderSettings();
+});}
+function addBranch(){requireManager(async()=>{
+  const id=($('#nbId').value||'').trim().toLowerCase().replace(/[^a-z0-9_]/g,'');
+  const name=($('#nbName').value||'').trim();
+  if(!id||!name){toast('ใส่รหัสและชื่อสาขา','bad');return;}
+  if(branches.some(b=>b.id===id)){toast('รหัสสาขาซ้ำ','bad');return;}
+  if(!await guard(api.saveBranch(id,name,branches.length+1),'เพิ่มสาขา '+name+' แล้ว'))return;
+  await loadBranches();renderBranchBox();renderSettings();
+});}
+function doCloneCatalog(){requireManager(()=>{
+  const from=$('#cloneFrom').value,to=actBranch();
+  if(!from||from===to){toast('เลือกสาขาต้นทางที่ต่างกัน','bad');return;}
+  openModal('คัดลอกแคตตาล็อก',
+    `<p>คัดลอกรายการสินค้าทั้งหมดจาก <b>${esc(branchName(from))}</b> เข้า <b>${esc(branchName(to))}</b>?</p>
+     <p class="muted small">สต็อก &amp; ยอดใช้ต่อเดือนของรายการที่คัดลอกจะตั้งเป็น 0 · รายการที่มีอยู่แล้วจะไม่ถูกเขียนทับ</p>`,
+    `<button class="btn" onclick="closeModal()">ยกเลิก</button><button class="btn gold" onclick="confirmClone('${from}')">คัดลอก</button>`);
+});}
+async function confirmClone(from){
+  const to=actBranch();closeModal();
+  if(!await guard(api.cloneCatalog(from,to),'คัดลอกแคตตาล็อกเข้า '+branchName(to)+' แล้ว'))return;
+  await loadAll(to);refreshBadges();renderSettings();
+}
 
 /* ============================================================================
    BOOT  — connect Supabase, restore session or show login
